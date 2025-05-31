@@ -2,12 +2,12 @@
   "name": "f5-mcp-server",
   "version": "1.0.0",
   "description": "基于 MCP 协议的 F5 Server 脚本，使用 Express 和 HTTPS 提供 MCP 接口",
-  "main": "server_stdio.js",
+  "main": "server.js",
   "bin": {
-    "mcp-server": "server_stdio.js"
+    "mcp-server": "server.js"
   },
   "scripts": {
-    "start": "node server_stdio.js"
+    "start": "node server.js"
   },
   "repository": {
     "type": "git",
