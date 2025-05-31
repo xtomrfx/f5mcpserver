@@ -1,0 +1,24 @@
+{
+  "name": "f5-mcp-server",
+  "version": "1.0.0",
+  "description": "基于 MCP 协议的 F5 Server 脚本，使用 Express 和 HTTPS 提供 MCP 接口",
+  "main": "server.js",
+  "bin": {
+    "mcp-server": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://gitee.com/xtomrfx/f5-mcp.git"
+  },
+  "keywords": [
+    "mcp-server"
+  ],
+    "dependencies": {
+    "express": "^4.18.2"
+  },
+  "author": "KELING JI",
+  "license": "MIT"
+}
