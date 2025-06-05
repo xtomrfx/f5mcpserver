@@ -2,21 +2,30 @@
 
 const express = require('express');
 const https = require('https');
+const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json());
 
-// 全局日志：打印请求 & 响应
+// ===== 日志开关配置 =====
+// 将这两个值设置为 true 或 false 来开启/关闭对应的日志
+const ENABLE_CLIENT_LOG = true; // 控制 MCP Server <-> Client 的通信日志
+const ENABLE_F5_LOG = true;     // 控制 MCP Server <-> F5 设备 的通信日志
+
+// 全局日志：打印请求 & 响应（Client <-> MCP Server）
+// 仅在 ENABLE_CLIENT_LOG 为 true 时才输出
 app.use((req, res, next) => {
-  console.log(`\n----- MCP REQUEST -----`);
-  console.log(`${req.method} ${req.originalUrl}`);
-  console.log(`Request Body:`, JSON.stringify(req.body, null, 2));
-  const _json = res.json;
-  res.json = function(data) {
-    console.log(`Response Body:`, JSON.stringify(data, null, 2));
-    console.log(`----- END REQUEST -----\n`);
-    return _json.call(this, data);
-  };
+  if (ENABLE_CLIENT_LOG) {
+    console.log(`\n----- MCP REQUEST -----`);
+    console.log(`${req.method} ${req.originalUrl}`);
+    console.log(`Request Body:`, JSON.stringify(req.body, null, 2));
+    const _json = res.json;
+    res.json = function(data) {
+      console.log(`Response Body:`, JSON.stringify(data, null, 2));
+      console.log(`----- END REQUEST -----\n`);
+      return _json.call(this, data);
+    };
+  }
   next();
 });
 
@@ -29,15 +38,37 @@ async function f5Request(method, path, body, opts) {
   const url = `${f5_url}/mgmt/tm/ltm${path}`;
   const auth = 'Basic ' + Buffer.from(`${f5_username}:${f5_password}`).toString('base64');
   const headers = { 'Content-Type': 'application/json', Authorization: auth };
-  const resp = await fetch(url, { method, headers, agent: httpsAgent, body: body ? JSON.stringify(body) : null });
-  if (!resp.ok) {
-    const txt = await resp.text();
-    throw new Error(`F5 API ${method} ${path} failed: ${txt}`);
+
+  if (ENABLE_F5_LOG) {
+    console.log(`\n----- F5 REQUEST -----`);
+    console.log(`Method: ${method}`);
+    console.log(`URL   : ${url}`);
+    if (body) {
+      console.log(`Request Body: ${JSON.stringify(body, null, 2)}`);
+    } else {
+      console.log(`Request Body: <empty>`);
+    }
   }
-  // 尝试解析 JSON，若无内容则返回 null,一些API call会无返回，出现执行成功但是报错，造成模型困扰
-  const text = await resp.text();
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { return null; }
+
+  const resp = await fetch(url, { method, headers, agent: httpsAgent, body: body ? JSON.stringify(body) : null });
+  // 读取响应文本
+  const respText = await resp.text();
+
+  if (ENABLE_F5_LOG) {
+    console.log(`Response Status: ${resp.status} ${resp.statusText}`);
+    console.log(`Response Body  : ${respText || '<empty>'}`);
+    console.log(`----- END F5 REQUEST -----\n`);
+  }
+
+  if (!resp.ok) {
+    throw new Error(`F5 API ${method} ${path} failed: ${respText}`);
+  }
+  if (!respText) return null;
+  try {
+    return JSON.parse(respText);
+  } catch {
+    return null;
+  }
 }
 
 async function f5RequestSys(method, path, body, opts) {
@@ -45,14 +76,36 @@ async function f5RequestSys(method, path, body, opts) {
   const url = `${f5_url}/mgmt/tm/sys${path}`;
   const auth = 'Basic ' + Buffer.from(`${f5_username}:${f5_password}`).toString('base64');
   const headers = { 'Content-Type': 'application/json', Authorization: auth };
-  const resp = await fetch(url, { method, headers, agent: httpsAgent, body: body ? JSON.stringify(body) : null });
-  if (!resp.ok) {
-    const txt = await resp.text();
-    throw new Error(`F5 API ${method} ${path} failed: ${txt}`);
+
+  if (ENABLE_F5_LOG) {
+    console.log(`\n----- F5 (SYS) REQUEST -----`);
+    console.log(`Method: ${method}`);
+    console.log(`URL   : ${url}`);
+    if (body) {
+      console.log(`Request Body: ${JSON.stringify(body, null, 2)}`);
+    } else {
+      console.log(`Request Body: <empty>`);
+    }
   }
-  const text = await resp.text();
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { return null; }
+
+  const resp = await fetch(url, { method, headers, agent: httpsAgent, body: body ? JSON.stringify(body) : null });
+  const respText = await resp.text();
+
+  if (ENABLE_F5_LOG) {
+    console.log(`Response Status: ${resp.status} ${resp.statusText}`);
+    console.log(`Response Body  : ${respText || '<empty>'}`);
+    console.log(`----- END F5 (SYS) REQUEST -----\n`);
+  }
+
+  if (!resp.ok) {
+    throw new Error(`F5 API ${method} ${path} failed: ${respText}`);
+  }
+  if (!respText) return null;
+  try {
+    return JSON.parse(respText);
+  } catch {
+    return null;
+  }
 }
 
 // ===== 工具实现 =====
@@ -61,7 +114,12 @@ async function runConfigurePool(opts) {
   if (!pool_name || !Array.isArray(members)) throw new Error('Missing pool_name or members');
   await f5Request('POST', '/pool', { name: pool_name, partition: 'Common' }, opts);
   for (const m of members) {
-    await f5Request('POST', `/pool/~Common~${encodeURIComponent(pool_name)}/members`, { partition: 'Common', name: `${m.address}:${m.port}`, address: m.address }, opts);
+    await f5Request(
+      'POST',
+      `/pool/~Common~${encodeURIComponent(pool_name)}/members`,
+      { partition: 'Common', name: `${m.address}:${m.port}`, address: m.address },
+      opts
+    );
   }
   return { content: [{ type: 'text', text: `OK Pool '${pool_name}' created with ${members.length} members.` }] };
 }
@@ -108,11 +166,10 @@ async function runGetPoolMemberStatus(opts) {
     const address = n['addr']?.description || n['address']?.description || 'unknown';
     const port = n['port']?.value || n['port']?.description || 'unknown';
     const avail = n['status.availabilityState']?.description || 'unknown';
-    return { address, port, status: avail.toLowerCase()==='available' ? 'up' : 'down' };
+    return { address, port, status: avail.toLowerCase() === 'available' ? 'up' : 'down' };
   });
   return { content: [{ type: 'text', text: `OK Pool '${pool_name}' members: ${JSON.stringify(rows)}` }] };
 }
-
 
 async function runGetLtmLogs(opts) {
   const { start_time, end_time } = opts;
@@ -130,7 +187,6 @@ async function runGetLtmLogs(opts) {
   };
 }
 
-
 async function runAddIrules(opts) {
   const { irule_name, irule_code, partition } = opts;
   if (!irule_name || !irule_code) throw new Error('Missing irule_name or irule_code');
@@ -143,9 +199,6 @@ async function runAddIrules(opts) {
   return { content: [{ type: 'text', text: `OK iRule '${irule_name}' created.` }] };
 }
 
-
-
-// ===== 新版：更新 pool member 状态（普通 API 管理，无 iApp） =====
 async function runUpdateMemberStat(opts) {
   const { pool_name, member_address, member_port, action } = opts;
   if (!pool_name || !member_address || !member_port || !action) {
@@ -194,8 +247,6 @@ async function runGetCpuStat(opts) {
     ]
   };
 }
-
-
 
 // ===== 工具声明 =====
 const tools = [
@@ -326,8 +377,8 @@ const tools = [
       },
       required: ['f5_url','f5_username','f5_password','start_time','end_time'],
       additionalProperties: false
-  },
-  handler: runGetLtmLogs
+    },
+    handler: runGetLtmLogs
   },
   {
     name: 'updateMemberStat',
@@ -343,33 +394,34 @@ const tools = [
          member_port:     { type: 'integer', description: 'Member port' },
          action: {
            type: 'string',
-          enum: ['enable', 'disable'],
+           enum: ['enable', 'disable'],
            description: "Action to perform: 'enable' or 'disable'"
-       }
-     },
-     required: ['f5_url','f5_username','f5_password','pool_name','member_address','member_port','action'],
-     additionalProperties: false
-   },
-   handler: runUpdateMemberStat
-   },
-   {
-  name: 'addIrules',
-  description: 'Upload an iRule to the F5',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      f5_url:      { type: 'string' },
-      f5_username: { type: 'string' },
-      f5_password: { type: 'string' },
-      irule_name:  { type: 'string', description: 'Name of the iRule' },
-      irule_code:  { type: 'string', description: 'The iRule script content' },
-      partition:   { type: 'string', description: 'Partition to upload the iRule to (default Common)' }
+         }
+      },
+      required: ['f5_url','f5_username','f5_password','pool_name','member_address','member_port','action'],
+      additionalProperties: false
     },
-    required: ['f5_url','f5_username','f5_password','irule_name','irule_code'],
-    additionalProperties: false
+    handler: runUpdateMemberStat
   },
-  handler: runAddIrules
-},{
+  {
+    name: 'addIrules',
+    description: 'Upload an iRule to the F5',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string' },
+        f5_username: { type: 'string' },
+        f5_password: { type: 'string' },
+        irule_name:  { type: 'string', description: 'Name of the iRule' },
+        irule_code:  { type: 'string', description: 'The iRule script content' },
+        partition:   { type: 'string', description: 'Partition to upload the iRule to (default Common)' }
+      },
+      required: ['f5_url','f5_username','f5_password','irule_name','irule_code'],
+      additionalProperties: false
+    },
+    handler: runAddIrules
+  },
+  {
     name: 'getCpuStat',
     description: 'Get CPU statistics from the F5 device (via /mgmt/tm/sys/cpu)',
     inputSchema: {
@@ -393,33 +445,55 @@ app.post('/mcp/invoke', async (req, res) => {
   const toolName = name || params?.name;
   const toolArgs = args || params?.arguments || {};
   const tool = tools.find(t => t.name === toolName);
-  if (!tool) return res.status(400).json({ error:`Unknown tool: ${toolName}` });
-  try { const result = await tool.handler(toolArgs); return res.json(result); }
-  catch(e) { return res.status(500).json({ content:[{type:'text',text:`error ${e.message}`}] }); }
+  if (!tool) return res.status(400).json({ error: `Unknown tool: ${toolName}` });
+  try {
+    const result = await tool.handler(toolArgs);
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ content: [{ type: 'text', text: `error ${e.message}` }] });
+  }
 });
 
 // ===== 根路径 JSON-RPC =====
 app.post('/', async (req, res) => {
-  const { jsonrpc,id,method,params } = req.body;
-  if (method==='initialize') {
-    return res.json({ jsonrpc:'2.0', id, result:{ protocolVersion:'2025-03-26', capabilities:{listTools:true,invoke:true,call:true}, serverInfo:{name:'f5ConfigServer',version:'1.0.0'} } });
+  const { jsonrpc, id, method, params } = req.body;
+  if (method === 'initialize') {
+    return res.json({
+      jsonrpc: '2.0',
+      id,
+      result: {
+        protocolVersion: '2025-03-26',
+        capabilities: { listTools: true, invoke: true, call: true },
+        serverInfo: { name: 'f5ConfigServer', version: '1.0.0' }
+      }
+    });
   }
-  if (method==='mcp:list-tools'||method==='tools/list') {
-    return res.json({ jsonrpc:'2.0',id,result:{tools} });
+  if (method === 'mcp:list-tools' || method === 'tools/list') {
+    return res.json({ jsonrpc: '2.0', id, result: { tools } });
   }
-  if (['tools/invoke','mcp:invoke','tools/call','mcp:call-tool'].includes(method)) {
-    const { name, arguments:args } = params||{};
-    const tool=tools.find(t=>t.name===name);
-    if (!tool) return res.json({ jsonrpc:'2.0',id,error:{code:-32601,message:`Unknown tool: ${name}`} });
-    try{ const result=await tool.handler(args||{}); return res.json({jsonrpc:'2.0',id,result}); }
-    catch(e){ return res.json({jsonrpc:'2.0',id,error:{code:-32000,message:e.message}}); }
+  if (['tools/invoke', 'mcp:invoke', 'tools/call', 'mcp:call-tool'].includes(method)) {
+    const { name, arguments: args } = params || {};
+    const tool = tools.find(t => t.name === name);
+    if (!tool) {
+      return res.json({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32601, message: `Unknown tool: ${name}` }
+      });
+    }
+    try {
+      const result = await tool.handler(args || {});
+      return res.json({ jsonrpc: '2.0', id, result });
+    } catch (e) {
+      return res.json({ jsonrpc: '2.0', id, error: { code: -32000, message: e.message } });
+    }
   }
   if (method === 'ping') {
-    return res.json({ jsonrpc: "2.0", id, result: {}});
+    return res.json({ jsonrpc: '2.0', id, result: {} });
   }
-  return res.json({jsonrpc:'2.0',id,error:{code:-32601,message:`Method not found: ${method}`} });
+  return res.json({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
 });
 
 // ===== 启动 =====
-const PORT=process.env.PORT||3000;
-app.listen(PORT,()=>console.log(`OK MCP Server running on port ${PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`OK MCP Server running on port ${PORT}`));
