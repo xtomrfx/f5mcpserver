@@ -176,6 +176,26 @@ async function runDeletePool(opts) {
   return { content: [{ type: 'text', text: `OK Pool '${pool_name}' deleted.` }] };
 }
 
+
+ //列出所有 Pool 的信息
+async function runListAllPoolStat(opts) {
+  const { f5_url, f5_username, f5_password } = opts;
+  if (!f5_url || !f5_username || !f5_password) {
+    throw new Error('Missing f5_url, f5_username or f5_password');
+  }
+  const data = await f5Request('GET', '/pool', null, opts);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `All Pools:\n${JSON.stringify(data, null, 2)}`
+      }
+    ]
+  };
+}
+
+
+
 async function runCreateVirtualServer(opts) {
   const { virtual_name, ip, port, pool_name } = opts;
   if (!virtual_name || !ip || !port) throw new Error('Missing virtual_name, ip or port');
@@ -218,7 +238,7 @@ async function runGetLtmLogs(opts) {
   return {
     content: [{
       type: 'text',
-      text: `📄 LTM Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs, null, 2)}`
+      text: `LTM Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs, null, 2)}`
     }]
   };
 }
@@ -266,11 +286,12 @@ async function runGetCpuStat(opts) {
     content: [
       {
         type: 'text',
-        text: `🖥️ CPU Stats:\n${JSON.stringify(data, null, 2)}`
+        text: `CPU Stats:\n${JSON.stringify(data, null, 2)}`
       }
     ]
   };
 }
+
 
 // ===== 工具声明 =====
 const tools = [
@@ -459,6 +480,21 @@ const tools = [
       additionalProperties: false
     },
     handler: runGetCpuStat
+  }, 
+    {
+    name: 'listAllPool',
+    description: 'List all pools status incloud name, monitor, and other detail con the F5 device',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL, e.g. https://<host>' },
+        f5_username: { type: 'string', description: 'F5 username' },
+        f5_password: { type: 'string', description: 'F5 password' }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password'],
+      additionalProperties: false
+    },
+    handler: runListAllPoolStat
   }
 ];
 
@@ -521,4 +557,3 @@ app.post('/', async (req, res) => {
 // ===== 启动 =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`OK MCP Server running on port ${PORT}`));
-
