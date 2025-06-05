@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+// local 运行请安装最新的node js
+// 1. npm init -y  
+// 2. npm install express
+// 3. node + 文件名
+
 const express = require('express');
 const https = require('https');
 
@@ -50,13 +55,23 @@ async function f5Request(method, path, body, opts) {
     }
   }
 
-  const resp = await fetch(url, {
-    method,
-    headers,
-    agent: httpsAgent,
-    body: body ? JSON.stringify(body) : null
-  });
-  const respText = await resp.text();
+  // 在这里捕获 fetch 可能抛出的底层异常
+  let resp;
+  let respText;
+  try {
+    resp = await fetch(url, {
+      method,
+      headers,
+      agent: httpsAgent,
+      body: body ? JSON.stringify(body) : null
+    });
+    respText = await resp.text();
+  } catch (err) {
+    // 打印出完整的错误对象，方便排查是网络、TLS、还是其它问题
+    console.error("底层 fetch 调用出错：", err);
+    // 抛出的错误消息中包含 err.message，Client 会收到类似 “fetch failed: connect ECONNREFUSED” 的信息
+    throw new Error(`fetch failed: ${err.message}`);
+  }
 
   if (ENABLE_F5_LOG) {
     console.log(`Response Status: ${resp.status} ${resp.statusText}`);
@@ -65,16 +80,20 @@ async function f5Request(method, path, body, opts) {
   }
 
   if (!resp.ok) {
+    // F5 本身返回了非 2xx 的状态码，我们把它当作错误抛出，同时把返回的 Body 也显示出来
     throw new Error(`F5 API ${method} ${path} failed: ${respText}`);
   }
   if (!respText) return null;
+
   try {
     return JSON.parse(respText);
   } catch {
+    // 如果返回的不是合法 JSON，就直接返回 null 而不抛异常
     return null;
   }
 }
 
+// ===== 带详细错误日志的 f5RequestSys =====
 async function f5RequestSys(method, path, body, opts) {
   const { f5_url, f5_username, f5_password } = opts;
   const url = `${f5_url}/mgmt/tm/sys${path}`;
@@ -92,13 +111,21 @@ async function f5RequestSys(method, path, body, opts) {
     }
   }
 
-  const resp = await fetch(url, {
-    method,
-    headers,
-    agent: httpsAgent,
-    body: body ? JSON.stringify(body) : null
-  });
-  const respText = await resp.text();
+  // 在这里捕获 fetch 可能抛出的底层异常
+  let resp;
+  let respText;
+  try {
+    resp = await fetch(url, {
+      method,
+      headers,
+      agent: httpsAgent,
+      body: body ? JSON.stringify(body) : null
+    });
+    respText = await resp.text();
+  } catch (err) {
+    console.error("底层 fetch 调用出错（SYS 路径）：", err);
+    throw new Error(`fetch failed: ${err.message}`);
+  }
 
   if (ENABLE_F5_LOG) {
     console.log(`Response Status: ${resp.status} ${resp.statusText}`);
@@ -107,9 +134,10 @@ async function f5RequestSys(method, path, body, opts) {
   }
 
   if (!resp.ok) {
-    throw new Error(`F5 API ${method} ${path} failed: ${respText}`);
+    throw new Error(`F5 SYS API ${method} ${path} failed: ${respText}`);
   }
   if (!respText) return null;
+
   try {
     return JSON.parse(respText);
   } catch {
@@ -493,3 +521,4 @@ app.post('/', async (req, res) => {
 // ===== 启动 =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`OK MCP Server running on port ${PORT}`));
+
