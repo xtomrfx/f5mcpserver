@@ -2,7 +2,6 @@
 
 const express = require('express');
 const https = require('https');
-const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json());
@@ -33,6 +32,7 @@ app.use((req, res, next) => {
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // 通用 F5 REST 调用，兼容删除无返回体
+// 这里使用全局 fetch（Node.js 18+）来替代 node-fetch
 async function f5Request(method, path, body, opts) {
   const { f5_url, f5_username, f5_password } = opts;
   const url = `${f5_url}/mgmt/tm/ltm${path}`;
@@ -50,8 +50,12 @@ async function f5Request(method, path, body, opts) {
     }
   }
 
-  const resp = await fetch(url, { method, headers, agent: httpsAgent, body: body ? JSON.stringify(body) : null });
-  // 读取响应文本
+  const resp = await fetch(url, {
+    method,
+    headers,
+    agent: httpsAgent,
+    body: body ? JSON.stringify(body) : null
+  });
   const respText = await resp.text();
 
   if (ENABLE_F5_LOG) {
@@ -88,7 +92,12 @@ async function f5RequestSys(method, path, body, opts) {
     }
   }
 
-  const resp = await fetch(url, { method, headers, agent: httpsAgent, body: body ? JSON.stringify(body) : null });
+  const resp = await fetch(url, {
+    method,
+    headers,
+    agent: httpsAgent,
+    body: body ? JSON.stringify(body) : null
+  });
   const respText = await resp.text();
 
   if (ENABLE_F5_LOG) {
@@ -135,7 +144,6 @@ async function runRemoveMember(opts) {
 async function runDeletePool(opts) {
   const { pool_name } = opts;
   if (!pool_name) throw new Error('Missing pool_name');
-  // 删除时使用不带 partition 的路径
   await f5Request('DELETE', `/pool/${encodeURIComponent(pool_name)}`, null, opts);
   return { content: [{ type: 'text', text: `OK Pool '${pool_name}' deleted.` }] };
 }
@@ -204,25 +212,13 @@ async function runUpdateMemberStat(opts) {
   if (!pool_name || !member_address || !member_port || !action) {
     throw new Error('Missing pool_name, member_address, member_port or action');
   }
-  // 1) pool 的 URL 片段
   const poolFq = `~Common~${encodeURIComponent(pool_name)}`;
-  // 2) member ID 只要 分区+address:port，不要 pool 名
-  //    e.g. "~Common~10.1.10.6:53"
   const memberId = encodeURIComponent(`~Common~${member_address}:${member_port}`);
-  // 3) 切换 session 字段即可启用/禁用新连接
   const body = {
     state: 'user-up',
-    session: action === 'enable'
-      ? 'user-enabled'
-      : 'user-disabled'
+    session: action === 'enable' ? 'user-enabled' : 'user-disabled'
   };
-  // 4) 普通 API 管理用 PUT，注意路径中没有重复 pool_name
-  await f5Request(
-    'PUT',
-    `/pool/${poolFq}/members/${memberId}`,
-    body,
-    opts
-  );
+  await f5Request('PUT', `/pool/${poolFq}/members/${memberId}`, body, opts);
   const verb = action === 'enable' ? 'enabled' : 'disabled';
   return {
     content: [{
