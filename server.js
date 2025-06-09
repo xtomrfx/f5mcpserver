@@ -7,6 +7,8 @@
 
 const express = require('express');
 const https = require('https');
+const fetch = require('node-fetch');
+
 
 const app = express();
 app.use(express.json());
@@ -292,6 +294,75 @@ async function runGetCpuStat(opts) {
   };
 }
 
+async function runListAllVirtual(opts) {
+  const { f5_url, f5_username, f5_password } = opts;
+  if (!f5_url || !f5_username || !f5_password) {
+    throw new Error('Missing f5_url, f5_username or f5_password');
+  }
+  const data = await f5Request('GET', '/virtual', null, opts);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `All Virtual Servers:\n${JSON.stringify(data, null, 2)}`
+      }
+    ]
+  };
+}
+
+async function runGetTmmInfo(opts) {
+  const data = await f5RequestSys('GET', '/tmm-info', null, opts);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `TMM Info:\n${JSON.stringify(data, null, 2)}`
+      }
+    ]
+  };
+}
+
+async function runGetConnection(opts) {
+  const data = await f5RequestSys('GET', '/performance/connections/stats', null, opts);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `Connection Info:\n${JSON.stringify(data, null, 2)}`
+      }
+    ]
+  };
+}
+
+async function runGetCertificateStat(opts) {
+  const data = await f5RequestSys('GET', '/crypto/cert', null, opts);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `Certification Info:\n${JSON.stringify(data, null, 2)}`
+      }
+    ]
+  };
+}
+
+
+
+/*  抓的是packets，不是实时流量，需要额外处理，后续增加
+async function runGetThroughput(opts) {
+  const data = await f5RequestSys('GET', '/performance/throughput/stats', null, opts);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `Throughput Info:\n${JSON.stringify(data, null, 2)}`
+      }
+    ]
+  };ß
+}
+*/
+
+
 
 // ===== 工具声明 =====
 const tools = [
@@ -468,7 +539,12 @@ const tools = [
   },
   {
     name: 'getCpuStat',
-    description: 'Get CPU statistics from the F5 device (via /mgmt/tm/sys/cpu)',
+    description: 'Get CPU statistics from the F5 device (via /mgmt/tm/sys/cpu)' +
+    'Even CPU ID - numbered logical cores (0, 2, 4 …) are exclusively dedicated to TMM for handling data - plane tasks.' +
+    'Odd  CPU ID- numbered logical cores (1, 3, 5 …) are used to run the control plane and other system processes.'+
+    'the Ratio range in output is 1~100. example: fiveSecAvgUser: value 1 means fiveSecAvgUser is 1% usage' +
+    'fiveSecAvgUser - The average time spent by the specified processor in user context for the associated host in the last five seconds.' +
+    'fiveSecAvgSystem - The average time spent by the specified processor servicing system calls for the associated host in the last five seconds.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -495,8 +571,105 @@ const tools = [
       additionalProperties: false
     },
     handler: runListAllPoolStat
-  }
+  },{
+    name: 'listAllVirtual',
+    description: 'List all virtual servers on the F5 device. some important key in the output:' +
+    '- name: virtual server name\n' +
+    '- ipProtocol: protocol type\n' +
+    '- destination: VIP:port (e.g. 1.1.1.1:80)\n' +
+    '- enabled: whether virtual server is enabled\n' +
+    '- pool: pool name attached to the virtual server',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL, e.g. https://<host>' },
+        f5_username: { type: 'string', description: 'F5 username' },
+        f5_password: { type: 'string', description: 'F5 password' }
+      },
+      required: ['f5_url','f5_username','f5_password'],
+      additionalProperties: false
+    },
+    handler: runListAllVirtual
+  },{
+    name: 'getTmmInfo',
+    description: 'Get TMM resource usage information from the F5 device via /mgmt/tm/sys/tmm-info,' +
+    'Even - numbered logical cores (0, 2, 4 …) are exclusively dedicated to TMM for handling data - plane tasks.' +
+    'Odd - numbered logical cores (1, 3, 5 …) are used to run the control plane and other system processes.'+
+    'the Ratio range in output is 1~100. example: fiveMinAvgUsageRatio: value 1 means fiveMinAvgUsageRatio is 1% usage' +
+    'When the TMM core utilization exceeds ~80%, the system will "borrow" a small amount of remaining computing resources (about 20%) from the odd - numbered cores to ensure the continuous response of the data plane. ',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL, e.g. https://<host>' },
+        f5_username: { type: 'string', description: 'F5 username' },
+       f5_password: { type: 'string', description: 'F5 password' }
+     },
+     required: ['f5_url', 'f5_username', 'f5_password'],
+     additionalProperties: false
+    },
+    handler: runGetTmmInfo
+},{
+    name: 'runGetConnection',
+    description: 'Get connection performance from the F5 device via /mgmt/tm/sys/performance/connections/stats,' +
+    'Client Connections - the connections statisitic from client to F5' +
+    'Server Connections - the connections statisitic from F5 to backend Server' +
+    'HTTP Requests - focus on HTTP request statisic ' +
+    'Connections - connections statistic in F5 session table',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL, e.g. https://<host>' },
+        f5_username: { type: 'string', description: 'F5 username' },
+       f5_password: { type: 'string', description: 'F5 password' }
+     },
+     required: ['f5_url', 'f5_username', 'f5_password'],
+     additionalProperties: false
+    },
+    handler: runGetConnection
+},{
+    name: 'runGetCertificateStat',
+    description: 'Get ALL Certification information from the F5 device via /mgmt/tm/sys/performance/connections/stats,' ,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL, e.g. https://<host>' },
+        f5_username: { type: 'string', description: 'F5 username' },
+       f5_password: { type: 'string', description: 'F5 password' }
+     },
+     required: ['f5_url', 'f5_username', 'f5_password'],
+     additionalProperties: false
+    },
+    handler: runGetCertificateStat
+}
+
+/*  throughput 是packets，不是bit/s ，需要额外计算，后续处理。
+
+,{
+    name: 'runGetThroughput',
+    description: 'Get connection performance from the F5 device via /mgmt/tm/sys/performance/connections/stats,' +
+    'In: The ingress traffic to the system, ' +
+    'Out: The egress traffic from the system' +
+    'Service: The larger of the two values of combined client and server-side ingress traffic or egress traffic, measured within TMM' +
+    'SSL TPS: SSL TPS',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL, e.g. https://<host>' },
+        f5_username: { type: 'string', description: 'F5 username' },
+       f5_password: { type: 'string', description: 'F5 password' }
+     },
+     required: ['f5_url', 'f5_username', 'f5_password'],
+     additionalProperties: false
+    },
+    handler: runGetThroughput
+}
+*/
+
 ];
+
+
+
+
 
 // ===== MCP 接口 =====
 app.post('/mcp/list-tools', (req, res) => res.json({ tools }));
