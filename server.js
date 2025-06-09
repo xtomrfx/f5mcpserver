@@ -738,7 +738,9 @@ app.listen(PORT, () => {
   console.log(`OK,MCP Server running on port ${PORT}`);
 }).on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`Sorry,Port ${PORT} is already in use. Please try a different port.`);
+    console.error(`Sorry,Port ${PORT} is already in use. Please try a different port.\n
+      nxp command : npx -y git+https://gitee.com/xtomrfx/f5-mcp.git --port=8088 \n
+      local use: node server.js --port=xxx `);
   } else {
     throw err;
   }
