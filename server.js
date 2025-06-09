@@ -728,5 +728,18 @@ app.post('/', async (req, res) => {
 });
 
 // ===== 启动 =====
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`OK MCP Server running on port ${PORT}`));
+// 获取 --port=xxxx 参数（默认 3000）
+const args = process.argv.slice(2);
+const portArg = args.find(arg => arg.startsWith('--port='));
+const PORT = portArg ? parseInt(portArg.split('=')[1], 10) : (process.env.PORT || 3000);
+
+// 启动监听
+app.listen(PORT, () => {
+  console.log(`OK,MCP Server running on port ${PORT}`);
+}).on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Sorry,Port ${PORT} is already in use. Please try a different port.`);
+  } else {
+    throw err;
+  }
+});
