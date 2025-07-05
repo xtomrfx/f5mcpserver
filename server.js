@@ -498,7 +498,7 @@ const tools = [
   },
   {
     name: 'updateMemberStat',
-    description: 'Enable or disable a member in a pool',
+    description: 'this tool is used to set a pool member status to enable or disable, not used to configuration a pool member ',
     inputSchema: {
       type: 'object',
       properties: {
