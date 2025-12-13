@@ -9,8 +9,7 @@
 
 **F5 MCP Server** 是一个基于 **Node.js + Express** 实现的 MCP Server，用于将 **F5 BIG-IP iControl REST API** 封装为 MCP 工具（tools），从而让 **LLM / AI Agent** 以“工具调用”的方式安全、结构化地操作 F5 设备。
 
-该项目主要解决的问题：
-
+该项目主要解决的问
 - 🔧 将 BIG-IP 的 REST API 转换为 **LLM 可调用工具**
 - 🤖 支持 **Agentic AI** 自动执行网络与应用交付运维操作
 - 🔌 可无缝集成 **Cherry Studio / Claude Desktop / OpenAI MCP Client**
@@ -20,21 +19,40 @@
 
 ## 2. 架构概览
 
-┌─────────────┐
-│ LLM / │
-│ AI Agent │
-└─────┬───────┘
-│ MCP
-┌─────▼───────┐
-│ F5 MCP │
-│ Server │ (Node.js / Express)
-└─────┬───────┘
-│ iControl REST
-┌─────▼───────┐
-│ F5 BIG-IP │
-│ LTM / APM │
-└─────────────┘
+LLM Agent ---mcp-- F5 MCP server(nodejs) -- rest api--- F5 LTM
 
+---
+
+## 3. 环境要求
+
+- Node.js **>= 18**
+- 可访问的 F5 BIG-IP 管理接口（HTTPS）
+- BIG-IP 已开启 iControl REST
+
+
+---
+
+## 4. 运行F5 MCP Server
+
+本地运行： node server.js
+npx运行： npx -y git+https://gitee.com/xtomrfx/f5-mcp.git --port=3000 (端口默认为3000，可以指定)
+
+---
+## 5. Agent加载F5 MCP Server
+
+```json
+{
+   "mcpServers": {
+    "f5ConfigServer": {
+      "type": "streamableHttp",
+      "url": "http://localhost:3000",
+      "endpoints": {
+        "listTools": "/mcp/list-tools",
+        "invoke":    "/mcp/invoke"
+      }
+    }
+  }
+}
 
 
 
