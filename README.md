@@ -37,10 +37,11 @@ LLM Agent ---mcp-- F5 MCP server(nodejs) -- rest api--- F5 LTM
 - 本地运行：
 ```bash
 node server.js
+```
 - npx运行：
 ```bash 
 npx -y git+https://gitee.com/xtomrfx/f5-mcp.git --port=3000 (端口默认为3000，可以指定)
-
+```
 ---
 ## 5. Agent加载F5 MCP Server
 
