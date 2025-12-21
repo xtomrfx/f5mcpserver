@@ -1,36 +1,67 @@
-# F5 LTM MCP Server
+# F5 MCP Server
 
-#### Description
-F5 MCP Server for LTM ops 
+> An MCP (Model Context Protocol) Server for F5 BIG-IP  
+> Exposes F5 iControl REST APIs as **LLM-callable tools**, enabling Agentic AI to operate BIG-IP programmatically.
 
-#### Software Architecture
-Software architecture description
+---
 
-#### Installation
+## 1. Project Overview
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+**F5 MCP Server** is an MCP Server implemented with **Node.js + Express**, designed to wrap F5 BIG-IP iControl REST APIs as MCP tools.
+This allows LLMs / AI Agents to interact with F5 devices in a secure, structured, and tool-driven manner.
 
-#### Instructions
+> **Update:** A Python-based implementation has recently been added, with the file name **`server.py`**.
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### Contribution
-
-1.  Fork the repository
-2.  Create Feat_xxx branch
-3.  Commit your code
-4.  Create Pull Request
+Key Problems This Project Addresses
+- 🔧 **Expose BIG-IP REST APIs as LLM-callable tools** ，Transform low-level iControl REST endpoints into well-defined MCP tools that AI agents can safely invoke.
+- 🤖 **Enable Agentic AI for automated network & application delivery operations**，Allow AI agents to perform operational tasks such as configuration, inspection, and troubleshooting on F5 devices.
+- 🔌 Seamless integration with MCP clients **Cherry Studio / Claude Desktop / OpenAI MCP Client**
+- 🧠 Help AI understand F5 capability boundaries
 
 
-#### Gitee Feature
+---
 
-1.  You can use Readme\_XXX.md to support different languages, such as Readme\_en.md, Readme\_zh.md
-2.  Gitee blog [blog.gitee.com](https://blog.gitee.com)
-3.  Explore open source project [https://gitee.com/explore](https://gitee.com/explore)
-4.  The most valuable open source project [GVP](https://gitee.com/gvp)
-5.  The manual of Gitee [https://gitee.com/help](https://gitee.com/help)
-6.  The most popular members  [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+## 2. Architecture
+
+LLM Agent ---mcp-- F5 MCP server(nodejs) -- rest api--- F5 LTM
+
+---
+
+## 3. Env
+
+- Node.js **>= 18**
+- F5 BIG-IP LTM
+
+
+
+---
+
+## 4. launch F5 MCP Server
+
+- local：
+```bash
+node server.js
+```
+- npx：
+```bash 
+npx -y git+https://gitee.com/xtomrfx/f5-mcp.git --port=3000 (default port is 3000，use --port to define)
+```
+---
+## 5. install F5 MCP Server to Agent
+
+```json
+{
+   "mcpServers": {
+    "f5ConfigServer": {
+      "type": "streamableHttp",
+      "url": "http://localhost:3000",
+      "endpoints": {
+        "listTools": "/mcp/list-tools",
+        "invoke":    "/mcp/invoke"
+      }
+    }
+  }
+}
+
+
+
