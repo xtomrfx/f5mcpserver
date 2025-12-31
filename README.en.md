@@ -37,8 +37,8 @@ LLM Agent ---mcp-- F5 MCP server(nodejs) -- rest api--- F5 LTM
 ---
 
 ## 4. launch F5 MCP Server
-
-- local：
+### 4.1 launch F5 MCP Server （nodejs）
+- run local：
 ```bash
 node server.js
 ```
@@ -46,6 +46,26 @@ node server.js
 ```bash 
 npx -y git+https://gitee.com/xtomrfx/f5-mcp.git --port=3000 (default port is 3000，use --port to define)
 ```
+
+### 4.2 launch F5 MCP Server（Docker）:
+
+- Clone the repository：
+```
+git clone https://gitee.com/xtomrfx/f5-mcp.git
+cd f5-mcp
+```
+- Build & run with docker-compose (Method 1):
+```
+docker-compose up -d
+```
+The service will listen on port 3000 by default.
+
+- Build & run with Docker CLI (Method 2):
+```
+docker build -t f5-mcp-server .
+docker run -d -p 3000:3000 --name f5-mcp f5-mcp-server
+```
+
 ---
 ## 5. install F5 MCP Server to Agent
 
