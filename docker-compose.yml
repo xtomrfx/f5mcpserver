@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  f5-mcp:
+    # 1. 镜像构建：使用当前目录下的 Dockerfile 构建容器
+    build: .
+    
+    # 2. 容器名称
+    container_name: f5-mcp-server
+    
+  
+    ports:
+      - "3000:3000"
+    
+    # 重启策略：开机自启，除非手动停止
+    restart: unless-stopped
+
+    environment:
+      - NODE_ENV=production
+      - PORT=3000

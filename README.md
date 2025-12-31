@@ -36,6 +36,7 @@ LLM Agent ---mcp-- F5 MCP server(nodejs) -- rest api--- F5 LTM
 ---
 
 ## 4. 运行F5 MCP Server
+### 4.1 运行F5 MCP Server
 
 - 本地运行：
 ```bash
@@ -45,6 +46,29 @@ node server.js
 ```bash 
 npx -y git+https://gitee.com/xtomrfx/f5-mcp.git --port=3000 (端口默认为3000，可以指定)
 ```
+
+### 4.2 构建容器运行 F5 MCP Server (Docker Version)
+
+- 克隆代码
+```bash
+   git clone [https://gitee.com/xtomrfx/f5-mcp.git](https://gitee.com/xtomrfx/f5-mcp.git)
+```
+- 构建镜像 （方法1）
+```
+   cd f5-mcp
+```
+```
+  docker-compose up -d
+```
+服务启动后默认监听本地 3000 端口。
+
+- 构建镜像 （方法2）
+```
+docker build -t f5-mcp-server .
+docker run -d -p 3000:3000 --name f5-mcp f5-mcp-server
+```
+
+
 ---
 ## 5. Agent加载F5 MCP Server
 
