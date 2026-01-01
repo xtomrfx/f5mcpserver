@@ -51,7 +51,7 @@ npx -y git+https://gitee.com/xtomrfx/f5-mcp.git --port=3000 (端口默认为3000
 
 - 克隆代码
 ```bash
-   git clone [https://gitee.com/xtomrfx/f5-mcp.git](https://gitee.com/xtomrfx/f5-mcp.git)
+   git clone https://gitee.com/xtomrfx/f5-mcp.git
 ```
 - 构建镜像 （方法1）
 ```
