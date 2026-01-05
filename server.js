@@ -147,6 +147,56 @@ async function f5RequestSys(method, path, body, opts) {
   }
 }
 
+// ===== 新增：Util 模块请求函数 (用于执行 bash/tcpdump) =====
+async function f5RequestUtil(method, path, body, opts) {
+  const { f5_url, f5_username, f5_password } = opts;
+  // 注意：这里路径是 /mgmt/tm/util
+  const url = `${f5_url}/mgmt/tm/util${path}`;
+  const auth = 'Basic ' + Buffer.from(`${f5_username}:${f5_password}`).toString('base64');
+  const headers = { 'Content-Type': 'application/json', Authorization: auth };
+
+  if (ENABLE_F5_LOG) {
+    console.log(`\n----- F5 (UTIL) REQUEST -----`);
+    console.log(`Method: ${method}`);
+    console.log(`URL   : ${url}`);
+    if (body) console.log(`Request Body: ${JSON.stringify(body, null, 2)}`);
+  }
+
+  let resp;
+  let respText;
+  try {
+    resp = await fetch(url, {
+      method,
+      headers,
+      agent: httpsAgent,
+      body: body ? JSON.stringify(body) : null
+    });
+    respText = await resp.text();
+  } catch (err) {
+    console.error("底层 fetch 调用出错（UTIL 路径）：", err);
+    throw new Error(`fetch failed: ${err.message}`);
+  }
+
+  if (ENABLE_F5_LOG) {
+    console.log(`Response Status: ${resp.status} ${resp.statusText}`);
+    // 抓包结果可能很长，日志里截断一下防止刷屏
+    const logText = respText.length > 2000 ? respText.substring(0, 2000) + '... (truncated)' : respText;
+    console.log(`Response Body  : ${logText || '<empty>'}`);
+    console.log(`----- END F5 (UTIL) REQUEST -----\n`);
+  }
+
+  if (!resp.ok) {
+    throw new Error(`F5 UTIL API ${method} ${path} failed: ${respText}`);
+  }
+  if (!respText) return null;
+
+  try {
+    return JSON.parse(respText);
+  } catch {
+    return null;
+  }
+}
+
 // ===== 工具实现 =====
 async function runConfigurePool(opts) {
   const { pool_name, members } = opts;
@@ -348,20 +398,63 @@ async function runGetCertificateStat(opts) {
 
 
 
-/*  抓的是packets，不是实时流量，需要额外处理，后续增加
-async function runGetThroughput(opts) {
-  const data = await f5RequestSys('GET', '/performance/throughput/stats', null, opts);
-  return {
-    content: [
-      {
-        type: 'text',
-        text: `Throughput Info:\n${JSON.stringify(data, null, 2)}`
-      }
-    ]
-  };ß
-}
-*/
+async function runTcpdump(opts) {
+  const { f5_url, f5_username, f5_password, interface_name, filter, count, duration } = opts;
+  
+  // 参数默认值处理
+  const iface = interface_name || '0.0'; // 默认为所有接口
+  const pktCount = count || 20;          // 默认只抓20个包，防止响应过大
+  const maxSeconds = duration || 10;     // 默认抓10秒，超时自动停止
+  const tcpdumpFilter = filter || '';
 
+  // 构建 bash 命令
+  // -n: 不解析主机名
+  // -nn: 不解析端口名
+  // -v: 详细信息
+  // -s0: 抓取完整包体
+  // -X: 同时打印 Hex 和 ASCII (大模型分析 payload 必需)
+  // timeout: Linux 命令，确保 tcpdump 不会死循环
+  const cmdString = `timeout ${maxSeconds}s tcpdump -ni ${iface} -c ${pktCount} -s0 -nn -v -X ${tcpdumpFilter}`;
+
+  console.log(`[Tcpdump] Executing: ${cmdString}`);
+
+  // F5 Bash API 的 payload 格式
+  const body = {
+    command: 'run',
+    utilCmdArgs: `-c '${cmdString}'`
+  };
+
+  try {
+    // 调用 /mgmt/tm/util/bash
+    const data = await f5RequestUtil('POST', '/bash', body, opts);
+    
+    // F5 bash 接口返回的结果通常在 commandResult 字段中
+    let output = data?.commandResult || '';
+
+    if (!output && data) {
+        // 有时候结果可能直接在 JSON 结构里，视版本而定，做个兜底
+        output = JSON.stringify(data);
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Tcpdump execution finished (Limit: ${pktCount} packets or ${maxSeconds}s).\nCommand: ${cmdString}\n\nResult:\n${output}`
+        }
+      ]
+    };
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error executing tcpdump: ${err.message}`
+        }
+      ]
+    };
+  }
+}
 
 
 // ===== 工具声明 =====
@@ -640,7 +733,27 @@ const tools = [
      additionalProperties: false
     },
     handler: runGetCertificateStat
-}
+},{
+    name: 'runTcpdump',
+    description: 'Run tcpdump on F5 to capture packets and analyze traffic content. ' + 
+                 'It uses "timeout" to prevent hanging if no traffic matches. ' +
+                 'Returns Hex/ASCII output (-X) suitable for LLM analysis.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:         { type: 'string', description: 'F5 management URL' },
+        f5_username:    { type: 'string', description: 'F5 username' },
+        f5_password:    { type: 'string', description: 'F5 password' },
+        interface_name: { type: 'string', description: 'Interface to listen on (default: 0.0 for all)' },
+        filter:         { type: 'string', description: 'Standard pcap filter string (e.g. "host 1.1.1.1 and port 80")' },
+        count:          { type: 'integer', description: 'Max packet count (default: 20)' },
+        duration:       { type: 'integer', description: 'Max duration in seconds (default: 10)' }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password'],
+      additionalProperties: false
+    },
+    handler: runTcpdump
+  }
 
 /*  throughput 是packets，不是bit/s ，需要额外计算，后续处理。
 
