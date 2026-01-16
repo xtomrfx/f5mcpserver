@@ -515,6 +515,34 @@ async function runViewConfig(opts) {
   }
 }
 
+// ===== 新增：获取 License 信息 =====
+async function runGetLicenseStatus(opts) {
+  const { f5_url, f5_username, f5_password } = opts;
+  if (!f5_url || !f5_username || !f5_password) {
+    throw new Error('Missing f5_url, f5_username or f5_password');
+  }
+
+  // 调用 /mgmt/tm/sys/license
+  const data = await f5RequestSys('GET', '/license', null, opts);
+
+  // 提取关键信息以方便大模型阅读
+  // F5 API 返回的 activeModules 通常是一个列表
+  const registrationKey = data?.registrationKey || 'N/A';
+  const activeModules = data?.activeModules || [];
+  
+  // 构造可读性更好的摘要
+  const summary = `Registration Key: ${registrationKey}\nActive Modules Count: ${activeModules.length}`;
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `License Status:\n${summary}\n\nActive Modules List:\n${JSON.stringify(activeModules, null, 2)}\n\nFull Raw Data:\n${JSON.stringify(data, null, 2)}`
+      }
+    ]
+  };
+}
+
 
 // ===== 工具声明 =====
 const tools = [
@@ -843,6 +871,20 @@ const tools = [
       additionalProperties: false
     },
     handler: runViewConfig
+  },{
+    name: 'getLicenseStatus',
+    description: 'Retrieve the F5 device license status, including the registration key and a list of all active/enabled modules (e.g., LTM, ASM, APM, GTM).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL, e.g. https://<host>' },
+        f5_username: { type: 'string', description: 'F5 username' },
+        f5_password: { type: 'string', description: 'F5 password' }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password'],
+      additionalProperties: false
+    },
+    handler: runGetLicenseStatus
   }
 
 /*  throughput 是packets，不是bit/s ，需要额外计算，后续处理。
