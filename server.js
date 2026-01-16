@@ -814,8 +814,15 @@ const tools = [
     handler: runTcpdump
   },{
     name: 'viewConfig',
-    description: 'View F5 configuration. Can view running config (tmsh list) or saved files (bigip.conf). ' +
-                 'Use "running_config" to see what is currently active in memory.',
+    description: 'Retrieve and analyze F5 configuration files to audit network and application settings. \n' +
+                 'Files content explanation:\n' +
+                 '- **running_config (tmsh list)**: The active configuration currently in memory. This is what is processing traffic NOW.\n' +
+                 '- **saved_ltm_file (/config/bigip.conf)**: Contains high-level traffic management objects: Virtual Servers, Pools, Monitors, Profiles, and iRules.\n' +
+                 '- **saved_base_file (/config/bigip_base.conf)**: Contains infrastructure settings: VLANs, Self IPs, Management IP, Routes, and Interface settings.\n\n' +
+                 'CRITICAL CONFIGURATION CHECKLIST:\n' +
+                 '1. **OneConnect & HTTP Dependency**: If a Virtual Server has a "OneConnect" profile configured to optimize connection reuse, it **MUST** also have an "HTTP" (or HTTPS) profile configured. OneConnect operates at Layer 7 and requires HTTP header parsing to function correctly.\n' +
+                 '2. **SNAT Configuration**: Check if "source-address-translation" is set to "automap" or a specific SNAT pool to ensure return traffic routing.\n' +
+                 '3. **Monitor Status**: Verify pools have active monitors attached for health checking.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -824,12 +831,12 @@ const tools = [
         f5_password:    { type: 'string', description: 'F5 password' },
         config_scope:   { 
           type: 'string', 
-          enum: ['running_config', 'saved_file', 'base_file'],
-          description: 'Choose "running_config" for tmsh list, "saved_file" for bigip.conf, "base_file" for bigip_base.conf' 
+          enum: ['running_config', 'saved_ltm_file', 'saved_base_file'],
+          description: 'Choose "running_config" for active memory config, "saved_ltm_file" for bigip.conf (LTM objects), "saved_base_file" for bigip_base.conf (Network objects).' 
         },
         specific_module: { 
           type: 'string', 
-          description: 'Optional (only for running_config). Filter by module, e.g., "ltm", "net", "sys", "ltm pool". Leave empty for full config.' 
+          description: 'Optional (only for running_config). Filter by module, e.g., "ltm", "net", "sys", "ltm virtual", "ltm pool". Leave empty for full config.' 
         }
       },
       required: ['f5_url', 'f5_username', 'f5_password', 'config_scope'],
