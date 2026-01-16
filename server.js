@@ -456,6 +456,65 @@ async function runTcpdump(opts) {
   }
 }
 
+// ===== 新增功能：查看 F5 配置 =====
+async function runViewConfig(opts) {
+  const { config_scope, specific_module } = opts;
+  
+  // 构造命令
+  let cmdString = '';
+  
+  if (config_scope === 'saved_file') {
+    // 查看硬盘上保存的默认 LTM 配置文件
+    cmdString = 'cat /config/bigip.conf';
+  } else if (config_scope === 'base_file') {
+     // 查看硬盘上保存的基础网络配置文件
+    cmdString = 'cat /config/bigip_base.conf';
+  } else {
+    // 默认为 tmsh list (内存中的运行配置)
+    // 如果指定了模块 (如 ltm, net, sys)，则只显示该模块
+    const module = specific_module ? specific_module : '';
+    cmdString = `tmsh list ${module}`;
+  }
+
+  console.log(`[ViewConfig] Executing: ${cmdString}`);
+
+  const body = {
+    command: 'run',
+    utilCmdArgs: `-c '${cmdString}'`
+  };
+
+  try {
+    // 复用已有的 f5RequestUtil 工具函数
+    const data = await f5RequestUtil('POST', '/bash', body, opts);
+    
+    // F5 bash 返回的内容通常在 commandResult 字段
+    let output = data?.commandResult || '';
+
+    // 防止输出为空的兜底
+    if (!output && data) {
+       output = "Command executed but returned no text (check if config is empty).";
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Configuration Output (${cmdString}):\n\n${output}`
+        }
+      ]
+    };
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error viewing config: ${err.message}`
+        }
+      ]
+    };
+  }
+}
+
 
 // ===== 工具声明 =====
 const tools = [
@@ -753,6 +812,30 @@ const tools = [
       additionalProperties: false
     },
     handler: runTcpdump
+  },{
+    name: 'viewConfig',
+    description: 'View F5 configuration. Can view running config (tmsh list) or saved files (bigip.conf). ' +
+                 'Use "running_config" to see what is currently active in memory.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:         { type: 'string', description: 'F5 management URL' },
+        f5_username:    { type: 'string', description: 'F5 username' },
+        f5_password:    { type: 'string', description: 'F5 password' },
+        config_scope:   { 
+          type: 'string', 
+          enum: ['running_config', 'saved_file', 'base_file'],
+          description: 'Choose "running_config" for tmsh list, "saved_file" for bigip.conf, "base_file" for bigip_base.conf' 
+        },
+        specific_module: { 
+          type: 'string', 
+          description: 'Optional (only for running_config). Filter by module, e.g., "ltm", "net", "sys", "ltm pool". Leave empty for full config.' 
+        }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password', 'config_scope'],
+      additionalProperties: false
+    },
+    handler: runViewConfig
   }
 
 /*  throughput 是packets，不是bit/s ，需要额外计算，后续处理。
