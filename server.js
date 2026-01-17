@@ -873,7 +873,8 @@ const tools = [
     handler: runViewConfig
   },{
     name: 'getLicenseStatus',
-    description: 'Retrieve the F5 device license status, including the registration key and a list of all active/enabled modules (e.g., LTM, ASM, APM, GTM).',
+    description: 'Retrieve the F5 device license status (e.g., LTM, ASM, APM, GTM). \n' +
+    '"level": "none" = license is not enable and "level": "nominal" = license is enable' ,
     inputSchema: {
       type: 'object',
       properties: {
