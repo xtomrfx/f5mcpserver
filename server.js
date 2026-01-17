@@ -295,6 +295,42 @@ async function runGetLtmLogs(opts) {
   };
 }
 
+async function runGetAuditLogs(opts) {
+  const { start_time, end_time } = opts;
+  if (!start_time || !end_time) {
+    throw new Error('Missing start_time or end_time');
+  }
+  const range = `${start_time}--${end_time}`;
+  // F5 API path for audit logs: /mgmt/tm/sys/log/audit/stats
+  // f5RequestSys automatically prepends /mgmt/tm/sys
+  const path = `/log/audit/stats?options=range,${encodeURIComponent(range)}`;
+  const logs = await f5RequestSys('GET', path, null, opts);
+  return {
+    content: [{
+      type: 'text',
+      text: `Audit Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs, null, 2)}`
+    }]
+  };
+}
+
+async function runGetSystemLogs(opts) {
+  const { start_time, end_time } = opts;
+  if (!start_time || !end_time) {
+    throw new Error('Missing start_time or end_time');
+  }
+  const range = `${start_time}--${end_time}`;
+  // F5 API path for system logs (messages): /mgmt/tm/sys/log/system/stats
+  // This corresponds to "tmsh show sys log system"
+  const path = `/log/system/stats?options=range,${encodeURIComponent(range)}`;
+  const logs = await f5RequestSys('GET', path, null, opts);
+  return {
+    content: [{
+      type: 'text',
+      text: `System Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs, null, 2)}`
+    }]
+  };
+}
+
 async function runAddIrules(opts) {
   const { irule_name, irule_code, partition } = opts;
   if (!irule_name || !irule_code) throw new Error('Missing irule_name or irule_code');
@@ -886,6 +922,41 @@ const tools = [
       additionalProperties: false
     },
     handler: runGetLicenseStatus
+  },{
+    name: 'getAuditLogs',
+    description: 'Retrieve Audit logs (/var/log/audit) within a specified time range via /mgmt/tm/sys/log/audit \n' +
+    'The audit event messages are messages that the BIG-IP system logs as a result of changes to the BIG-IP system configuration',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:       { type: 'string', description: 'F5 management URL' },
+        f5_username:  { type: 'string', description: 'F5 username' },
+        f5_password:  { type: 'string', description: 'F5 password' },
+        start_time:   { type: 'string', description: 'ISO timestamp for range start, e.g. 2025-05-30T00:00:00Z' },
+        end_time:     { type: 'string', description: 'ISO timestamp for range end, e.g. 2025-05-30T15:00:00Z' }
+      },
+      required: ['f5_url','f5_username','f5_password','start_time','end_time'],
+      additionalProperties: false
+    },
+    handler: runGetAuditLogs
+  },
+  {
+    name: 'getSystemLogs',
+    description: 'Retrieve System logs (/var/log/messages) within a specified time range via /mgmt/tm/sys/log/system\n'+
+    'The system event messages are based on global Linux events, and are not specific to BIG-IP local traffic management events.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:       { type: 'string', description: 'F5 management URL' },
+        f5_username:  { type: 'string', description: 'F5 username' },
+        f5_password:  { type: 'string', description: 'F5 password' },
+        start_time:   { type: 'string', description: 'ISO timestamp for range start, e.g. 2025-05-30T00:00:00Z' },
+        end_time:     { type: 'string', description: 'ISO timestamp for range end, e.g. 2025-05-30T15:00:00Z' }
+      },
+      required: ['f5_url','f5_username','f5_password','start_time','end_time'],
+      additionalProperties: false
+    },
+    handler: runGetSystemLogs
   }
 
 /*  throughput 是packets，不是bit/s ，需要额外计算，后续处理。
