@@ -287,10 +287,14 @@ async function runGetLtmLogs(opts) {
   const range = `${start_time}--${end_time}`;
   const path = `/log/ltm/stats?options=range,${encodeURIComponent(range)}`;
   const logs = await f5RequestSys('GET', path, null, opts);
+
+// 1. 清洗数据
+  let cleanText = cleanF5LogResponse(logs);
+
   return {
     content: [{
       type: 'text',
-      text: `LTM Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs, null, 2)}`
+      text: `LTM Logs from ${start_time} to ${end_time}:\n${cleanText}`
     }]
   };
 }
