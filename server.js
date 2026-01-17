@@ -307,7 +307,7 @@ async function runGetAuditLogs(opts) {
   const logs = await f5RequestSys('GET', path, null, opts);
 
   // 1. 清洗数据
-  let cleanText = cleanF5LogResponse(rawData);
+  let cleanText = cleanF5LogResponse(logs);
 
   // 2. 长度截断保护 (例如保留最后 50,000 字符，约 15k tokens)
   const MAX_CHARS = 60000;
