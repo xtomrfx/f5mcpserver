@@ -635,34 +635,65 @@ function cleanF5LogResponse(f5Json) {
 }
 
 
-// ===== 辅助函数：清洗 F5 配置文件 (Config Cleaner) =====
+
+
+// ===== 辅助函数：智能移除 F5 配置块 (支持嵌套) =====
+function removeBlock(text, blockStartKeyword) {
+  // 找到块的起始位置
+  const startIndex = text.indexOf(blockStartKeyword);
+  if (startIndex === -1) return text;
+
+  // 找到起始大括号 {
+  const openBraceIndex = text.indexOf('{', startIndex);
+  if (openBraceIndex === -1) return text;
+
+  let balance = 1;
+  let currentIndex = openBraceIndex + 1;
+  
+  // 遍历后续字符，计数大括号以处理嵌套
+  while (currentIndex < text.length && balance > 0) {
+    const char = text[currentIndex];
+    if (char === '{') balance++;
+    else if (char === '}') balance--;
+    currentIndex++;
+  }
+
+  // 移除整个块（包括末尾的换行）
+  if (balance === 0) {
+    const before = text.substring(0, startIndex);
+    const after = text.substring(currentIndex);
+    // 递归调用以处理可能存在的多个同名块
+    return removeBlock(before + after.trimStart(), blockStartKeyword);
+  }
+  
+  return text;
+}
+
+// ===== 主清洗函数 v2.0 =====
 function cleanF5ConfigResponse(configText) {
   if (!configText) return "";
-
   let cleaned = configText;
 
-  // 1. 【核心优化】移除空配置块 (例如 "ltm profile tcp { }")
-  // 解释：匹配 "开头单词... { }" 且大括号内为空或只有空格的内容
-  // 重复执行两次以处理嵌套后变空的情况
-  const emptyBlockRegex = /^\s*[\w\-\.]+\s+[\w\-\.\/]*\s*\{\s*\}\n?/gm;
-  cleaned = cleaned.replace(emptyBlockRegex, '');
-  cleaned = cleaned.replace(emptyBlockRegex, ''); 
+  // 1. 【安全移除】使用计数器移除复杂嵌套块 (彻底解决 Artifacts 问题)
+  // 这些块内部包含多层嵌套，必须用函数处理
+  cleaned = removeBlock(cleaned, "sys diags ihealth-request");
+  cleaned = removeBlock(cleaned, "sys snmp");
+  cleaned = removeBlock(cleaned, "sys software volume");
+  cleaned = removeBlock(cleaned, "sys disk logical-disk");
+  cleaned = removeBlock(cleaned, "sys software update");
 
-  // 2. 【去噪】移除具体的证书/密钥指纹和校验和 (保留名字和过期时间)
-  // 移除 checksum SHA1:..., fingerprint ..., signature 等
+  // 2. 【增强版】移除空配置块 (支持任意长度标题)
+  // 说明：匹配 "任意非大括号字符 { }"
+  const emptyBlockRegex = /^\s*[^{]+\{\s*\}\n?/gm;
+  // 执行多次以消除嵌套空块 (例如: A { B { } } -> A { })
+  for(let i=0; i<3; i++) {
+      cleaned = cleaned.replace(emptyBlockRegex, '');
+  }
+
+  // 3. 【降噪】正则移除单行元数据 (保持不变，这部分工作得很好)
   cleaned = cleaned.replace(/^\s*(checksum|fingerprint|signature|modulus|public-key|enc-key)\s+.*$/gm, '');
-  
-  // 3. 【去噪】移除无用的系统内部记录
-  // 移除 sys diags ihealth-request (qkview生成记录)
-  cleaned = cleaned.replace(/sys diags ihealth-request\s*\{[\s\S]*?\}/g, '');
-  // 移除 sys snmp (除非专门查监控，否则通常不影响流量)
-  cleaned = cleaned.replace(/sys snmp\s*\{[\s\S]*?\}/g, '');
-  
-  // 4. 【去噪】移除软件安装/磁盘状态 (保留 sys provision 以查看模块开启情况)
-  cleaned = cleaned.replace(/sys software volume\s*[\w\.\-]+\s*\{[\s\S]*?\}/g, '');
-  cleaned = cleaned.replace(/sys disk logical-disk\s*[\w\.\-]+\s*\{[\s\S]*?\}/g, '');
 
-  // 5. 【压缩】压缩连续的空行，只保留1行
+  // 4. 【压缩】压缩连续空行
   cleaned = cleaned.replace(/\n\s*\n/g, '\n');
 
   return cleaned.trim();
