@@ -546,11 +546,21 @@ async function runViewConfig(opts) {
        output = "Command executed but returned no text (check if config is empty).";
     }
 
+    const optimizedConfig = cleanF5ConfigResponse(output);
+  
+   //=== 新增：长度截断保护 (Config 依然可能很大，设个 300k 字符的安全线) ===
+    const MAX_CONFIG_CHARS = 300000;
+    let finalOutput = optimizedConfig;
+    if (finalOutput.length > MAX_CONFIG_CHARS) {
+        finalOutput = finalOutput.substring(0, MAX_CONFIG_CHARS) + "\n... (Configuration truncated due to length) ...";
+    }
+
+
     return {
       content: [
         {
           type: 'text',
-          text: `Configuration Output (${cmdString}):\n\n${output}`
+          text: `Configuration Output (${config_scope || specific_module || 'full'}):\n(Auto-optimized for LLM analysis)\n\n${finalOutput}`
         }
       ]
     };
@@ -622,6 +632,40 @@ function cleanF5LogResponse(f5Json) {
 
   // 3. 兜底：如果都不是，为了调试，只返回部分原始 JSON
   return "Unknown log format. First 500 chars: " + JSON.stringify(f5Json).substring(0, 500);
+}
+
+
+// ===== 辅助函数：清洗 F5 配置文件 (Config Cleaner) =====
+function cleanF5ConfigResponse(configText) {
+  if (!configText) return "";
+
+  let cleaned = configText;
+
+  // 1. 【核心优化】移除空配置块 (例如 "ltm profile tcp { }")
+  // 解释：匹配 "开头单词... { }" 且大括号内为空或只有空格的内容
+  // 重复执行两次以处理嵌套后变空的情况
+  const emptyBlockRegex = /^\s*[\w\-\.]+\s+[\w\-\.\/]*\s*\{\s*\}\n?/gm;
+  cleaned = cleaned.replace(emptyBlockRegex, '');
+  cleaned = cleaned.replace(emptyBlockRegex, ''); 
+
+  // 2. 【去噪】移除具体的证书/密钥指纹和校验和 (保留名字和过期时间)
+  // 移除 checksum SHA1:..., fingerprint ..., signature 等
+  cleaned = cleaned.replace(/^\s*(checksum|fingerprint|signature|modulus|public-key|enc-key)\s+.*$/gm, '');
+  
+  // 3. 【去噪】移除无用的系统内部记录
+  // 移除 sys diags ihealth-request (qkview生成记录)
+  cleaned = cleaned.replace(/sys diags ihealth-request\s*\{[\s\S]*?\}/g, '');
+  // 移除 sys snmp (除非专门查监控，否则通常不影响流量)
+  cleaned = cleaned.replace(/sys snmp\s*\{[\s\S]*?\}/g, '');
+  
+  // 4. 【去噪】移除软件安装/磁盘状态 (保留 sys provision 以查看模块开启情况)
+  cleaned = cleaned.replace(/sys software volume\s*[\w\.\-]+\s*\{[\s\S]*?\}/g, '');
+  cleaned = cleaned.replace(/sys disk logical-disk\s*[\w\.\-]+\s*\{[\s\S]*?\}/g, '');
+
+  // 5. 【压缩】压缩连续的空行，只保留1行
+  cleaned = cleaned.replace(/\n\s*\n/g, '\n');
+
+  return cleaned.trim();
 }
 
 
