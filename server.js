@@ -635,69 +635,90 @@ function cleanF5LogResponse(f5Json) {
 }
 
 
-
-
-// ===== 辅助函数：智能移除 F5 配置块 (支持嵌套) =====
+// ===== 辅助函数：智能移除 F5 配置块 (v2.0 修复版) =====
+// 这个函数通过计算 '{' 和 '}' 的数量来安全移除整个块，支持多层嵌套
 function removeBlock(text, blockStartKeyword) {
-  // 找到块的起始位置
-  const startIndex = text.indexOf(blockStartKeyword);
-  if (startIndex === -1) return text;
+  let startIndex = 0;
+  while (true) {
+    // 查找关键字的位置
+    startIndex = text.indexOf(blockStartKeyword, startIndex);
+    if (startIndex === -1) break;
 
-  // 找到起始大括号 {
-  const openBraceIndex = text.indexOf('{', startIndex);
-  if (openBraceIndex === -1) return text;
+    // 找到该关键字后的第一个 '{'
+    const openBraceIndex = text.indexOf('{', startIndex);
+    if (openBraceIndex === -1) {
+      // 如果只有关键字没有 '{'，可能是误报，跳过
+      startIndex += blockStartKeyword.length;
+      continue;
+    }
 
-  let balance = 1;
-  let currentIndex = openBraceIndex + 1;
-  
-  // 遍历后续字符，计数大括号以处理嵌套
-  while (currentIndex < text.length && balance > 0) {
-    const char = text[currentIndex];
-    if (char === '{') balance++;
-    else if (char === '}') balance--;
-    currentIndex++;
+    // 开始计数：遇到 { 加 1，遇到 } 减 1
+    let balance = 1;
+    let currentIndex = openBraceIndex + 1;
+    
+    while (currentIndex < text.length && balance > 0) {
+      const char = text[currentIndex];
+      if (char === '{') balance++;
+      else if (char === '}') balance--;
+      currentIndex++;
+    }
+
+    // 如果平衡归零，说明找到了完整的块
+    if (balance === 0) {
+      // 这里的 cutEndIndex 是闭合 '}' 的下一个位置
+      const before = text.substring(0, startIndex);
+      // 检查后面是否有换行符，顺便删掉
+      let cutEndIndex = currentIndex;
+      if (text[cutEndIndex] === '\n') cutEndIndex++; 
+      
+      const after = text.substring(cutEndIndex);
+      
+      // 更新文本
+      text = before + after;
+      // 重置 startIndex 继续查找下一个同名块
+      startIndex = 0; 
+    } else {
+      // 没找到闭合（可能是文本截断了），跳过
+      startIndex += blockStartKeyword.length;
+    }
   }
-
-  // 移除整个块（包括末尾的换行）
-  if (balance === 0) {
-    const before = text.substring(0, startIndex);
-    const after = text.substring(currentIndex);
-    // 递归调用以处理可能存在的多个同名块
-    return removeBlock(before + after.trimStart(), blockStartKeyword);
-  }
-  
   return text;
 }
 
-// ===== 主清洗函数 v2.0 =====
+// ===== 主清洗函数 =====
 function cleanF5ConfigResponse(configText) {
   if (!configText) return "";
   let cleaned = configText;
 
-  // 1. 【安全移除】使用计数器移除复杂嵌套块 (彻底解决 Artifacts 问题)
-  // 这些块内部包含多层嵌套，必须用函数处理
+  // 1. 【安全移除】使用计数器移除复杂嵌套块 (彻底解决结构断裂问题)
+  // 这些是你在输出中看到的大段无用信息
   cleaned = removeBlock(cleaned, "sys diags ihealth-request");
-  cleaned = removeBlock(cleaned, "sys snmp");
+  cleaned = removeBlock(cleaned, "sys snmp"); 
   cleaned = removeBlock(cleaned, "sys software volume");
   cleaned = removeBlock(cleaned, "sys disk logical-disk");
   cleaned = removeBlock(cleaned, "sys software update");
+  cleaned = removeBlock(cleaned, "sys management-dhcp"); // 你输出里不需要这个
+  cleaned = removeBlock(cleaned, "sys ecm cloud-provider"); // 云环境模板，通常不需要
+  cleaned = removeBlock(cleaned, "sys management-ovsdb"); 
 
-  // 2. 【增强版】移除空配置块 (支持任意长度标题)
-  // 说明：匹配 "任意非大括号字符 { }"
-  const emptyBlockRegex = /^\s*[^{]+\{\s*\}\n?/gm;
-  // 执行多次以消除嵌套空块 (例如: A { B { } } -> A { })
-  for(let i=0; i<3; i++) {
+  // 2. 【增强版】移除空配置块 (Iterative Regex)
+  // 匹配 "sys core { }" 这种里面什么都没有，或者只有空格的块
+  // 运行 5 次以处理多层空嵌套 (比如 A { B { } } -> A { } -> 空)
+  const emptyBlockRegex = /^\s*[^\s{]+\s*[^\s{]*\s*\{\s*\}\n?/gm;
+  for(let i=0; i<5; i++) {
       cleaned = cleaned.replace(emptyBlockRegex, '');
   }
 
-  // 3. 【降噪】正则移除单行元数据 (保持不变，这部分工作得很好)
-  cleaned = cleaned.replace(/^\s*(checksum|fingerprint|signature|modulus|public-key|enc-key)\s+.*$/gm, '');
+  // 3. 【降噪】移除具体的证书指纹/校验和 (保持单行正则)
+  cleaned = cleaned.replace(/^\s*(checksum|fingerprint|signature|modulus|public-key|enc-key|passphrase)\s+.*$/gm, '');
 
-  // 4. 【压缩】压缩连续空行
+  // 4. 【压缩】压缩连续空行，让 Token 更紧凑
   cleaned = cleaned.replace(/\n\s*\n/g, '\n');
 
   return cleaned.trim();
 }
+
+
 
 
 // ===== 工具声明 =====
