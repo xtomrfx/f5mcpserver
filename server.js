@@ -1145,46 +1145,124 @@ app.post('/mcp/invoke', async (req, res) => {
   }
 });
 
-// ===== 根路径 JSON-RPC =====
+
+// ===== 核心 MCP 处理器 (修复版) =====
 app.post('/', async (req, res) => {
   const { jsonrpc, id, method, params } = req.body;
-  if (method === 'initialize') {
-    return res.json({
-      jsonrpc: '2.0',
-      id,
-      result: {
-        protocolVersion: '2025-03-26',
-        capabilities: { listTools: true, invoke: true, call: true },
-        serverInfo: { name: 'f5ConfigServer', version: '1.0.0' }
-      }
-    });
+
+  // 1. 基础校验
+  if (jsonrpc !== '2.0') {
+    return res.status(400).json({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid Request' } });
   }
-  if (method === 'mcp:list-tools' || method === 'tools/list') {
-    return res.json({ jsonrpc: '2.0', id, result: { tools } });
-  }
-  if (['tools/invoke', 'mcp:invoke', 'tools/call', 'mcp:call-tool'].includes(method)) {
-    const { name, arguments: args } = params || {};
-    const tool = tools.find(t => t.name === name);
-    if (!tool) {
+
+  // 打印日志方便调试
+  console.log(`[MCP Request] Method: ${method}, ID: ${id}`);
+
+  try {
+    // -------------------------------------------------------
+    // 修复点 1: 标准化 Initialize 响应
+    // -------------------------------------------------------
+    if (method === 'initialize') {
       return res.json({
         jsonrpc: '2.0',
         id,
-        error: { code: -32601, message: `Unknown tool: ${name}` }
+        result: {
+          protocolVersion: '2024-11-05', // 使用标准版本号
+          capabilities: {
+            tools: {},    // 【重要】告诉 Client 我支持工具
+            logging: {}   // 可选：告诉 Client 我支持发日志
+          },
+          serverInfo: {
+            name: "f5ConfigServer",
+            version: "1.0.0"
+          }
+        }
       });
     }
-    try {
-      const result = await tool.handler(args || {});
-      return res.json({ jsonrpc: '2.0', id, result });
-    } catch (e) {
-      return res.json({ jsonrpc: '2.0', id, error: { code: -32000, message: e.message } });
-    }
-  }
-  if (method === 'ping') {
-    return res.json({ jsonrpc: '2.0', id, result: {} });
-  }
-  return res.json({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
-});
 
+    // -------------------------------------------------------
+    // 修复点 2: 处理 notifications/initialized
+    // -------------------------------------------------------
+    if (method === 'notifications/initialized') {
+      // 这是通知，不需要返回 result，但在 HTTP 中我们需要结束请求
+      // 返回 200 OK 即可，Client 收到这就知道握手成功了
+      return res.status(200).end();
+    }
+
+    // -------------------------------------------------------
+    // 修复点 3: 使用标准方法名 tools/list
+    // -------------------------------------------------------
+    if (method === 'tools/list') {
+      return res.json({
+        jsonrpc: '2.0',
+        id,
+        result: {
+          tools: tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema
+          }))
+        }
+      });
+    }
+
+    // -------------------------------------------------------
+    // 修复点 4: 使用标准方法名 tools/call
+    // -------------------------------------------------------
+    if (method === 'tools/call') {
+      const { name, arguments: args } = params || {};
+      const tool = tools.find(t => t.name === name);
+
+      if (!tool) {
+        return res.json({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32601, message: `Tool not found: ${name}` }
+        });
+      }
+
+      try {
+        const result = await tool.handler(args || {});
+        return res.json({
+          jsonrpc: '2.0',
+          id,
+          result: result
+        });
+      } catch (toolError) {
+        return res.json({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32000, message: toolError.message }
+        });
+      }
+    }
+
+    // -------------------------------------------------------
+    // 修复点 5: 优雅处理 Ping 和 未知方法
+    // -------------------------------------------------------
+    if (method === 'ping') {
+      return res.json({ jsonrpc: '2.0', id, result: {} });
+    }
+
+    // 对于 Client 瞎猜的 prompts/list 或 resources/list，
+    // 因为我们在 capabilities 里没声明，这里返回 Method not found 是正确的。
+    // 只要上面 capabilities 改对了，Client 通常就不会发这些了。
+    console.warn(`[MCP Warning] Method not supported: ${method}`);
+    return res.json({
+      jsonrpc: '2.0',
+      id,
+      error: { code: -32601, message: `Method not found: ${method}` }
+    });
+
+  } catch (err) {
+    console.error("Server Error:", err);
+    return res.status(500).json({
+      jsonrpc: '2.0',
+      id,
+      error: { code: -32603, message: 'Internal error' }
+    });
+  }
+});
 // ===== 启动 =====
 // 获取 --port=xxxx 参数（默认 3000）
 const args = process.argv.slice(2);
