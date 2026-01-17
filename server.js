@@ -523,7 +523,7 @@ async function runGetLicenseStatus(opts) {
   }
 
   // 调用 /mgmt/tm/sys/license
-  const data = await f5RequestSys('GET', '/license', null, opts);
+  const data = await f5RequestSys('GET', '/provision', null, opts);
 
   // 提取关键信息以方便大模型阅读
   // F5 API 返回的 activeModules 通常是一个列表
