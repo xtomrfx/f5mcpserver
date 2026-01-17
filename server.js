@@ -305,10 +305,21 @@ async function runGetAuditLogs(opts) {
   // f5RequestSys automatically prepends /mgmt/tm/sys
   const path = `/log/audit/stats?options=range,${encodeURIComponent(range)}`;
   const logs = await f5RequestSys('GET', path, null, opts);
+
+  // 1. 清洗数据
+  let cleanText = cleanF5LogResponse(rawData);
+
+  // 2. 长度截断保护 (例如保留最后 50,000 字符，约 15k tokens)
+  const MAX_CHARS = 60000;
+
+  if (cleanText.length > MAX_CHARS) {
+    cleanText = `... (logs truncated, showing last ${MAX_CHARS} chars) ...\n` + cleanText.slice(-MAX_CHARS);
+  }
+
   return {
     content: [{
       type: 'text',
-      text: `Audit Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs, null, 2)}`
+      text: `Audit Logs from ${start_time} to ${end_time}:\n${cleanText}`
     }]
   };
 }
@@ -577,6 +588,36 @@ async function runGetLicenseStatus(opts) {
       }
     ]
   };
+}
+
+
+
+// ===== 清洗 F5 日志数据  =====
+function cleanF5LogResponse(f5Json) {
+  if (!f5Json) return "No logs found.";
+
+  // 直接在 apiRawValues.apiAnonymous 中包含完整日志
+  if (f5Json.apiRawValues && f5Json.apiRawValues.apiAnonymous) {
+    let rawLogs = f5Json.apiRawValues.apiAnonymous;
+    // 去除首尾的空白字符
+    return rawLogs.trim();
+  }
+
+  // 2. 兼容处理：如果返回的是 nestedStats 结构
+  if (f5Json.entries) {
+    const entries = Object.values(f5Json.entries);
+    const cleanedLogs = entries.map(entry => {
+      const nested = entry.nestedStats && entry.nestedStats.entries;
+      if (!nested) return null;
+      // 尝试提取描述信息
+      return nested.logContent?.description || nested.description || null;
+    }).filter(item => item !== null);
+
+    return cleanedLogs.join('\n');
+  }
+
+  // 3. 兜底：如果都不是，为了调试，只返回部分原始 JSON
+  return "Unknown log format. First 500 chars: " + JSON.stringify(f5Json).substring(0, 500);
 }
 
 
