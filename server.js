@@ -784,7 +784,7 @@ async function runViewAwafConfig(opts) {
       
       // 步骤 1: 执行 save 命令 (KB: tmsh save asm policy [name] xml-file [path])
       // 注意：这里我们使用 xml-file。KB 也提到了 min-xml-file (Compact)，如果 XML 依然太大，可以改用 min-xml-file
-      await runBash(`tmsh save asm policy ${policy_name} xml-file ${tempFilePath}`);
+      await runBash(`tmsh save asm policy ${policy_name} min-xml-file ${tempFilePath}`);
 
       // 步骤 2: 读取文件内容
       console.log(`[ASM] Step 2: Reading file content...`);
