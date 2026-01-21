@@ -719,113 +719,102 @@ function cleanF5ConfigResponse(configText) {
 }
 
 
-
-/////////////////// test for awaf ////////////////
-
-// ===== AWAF/ASM 巡检工具实现 (基于 KB K00571548) =====
-async function runViewAwafConfig(opts) {
-  const { action, policy_name } = opts;
+// ==========================================
+// AWAF 工具 1: List AWAF Policies (列出策略)
+// ==========================================
+async function runListAwafPolicies(opts) {
   const { f5_url, f5_username, f5_password } = opts;
-  
-  // 辅助函数：执行 Bash 命令 (通过 /mgmt/tm/util/bash)
+
+  // 复用 f5RequestUtil 执行 bash 命令
   const runBash = async (command) => {
-    const url = `${f5_url}/mgmt/tm/util/bash`;
-    const auth = 'Basic ' + Buffer.from(`${f5_username}:${f5_password}`).toString('base64');
     const body = { command: "run", utilCmdArgs: `-c "${command}"` };
-
-    if (ENABLE_F5_LOG) console.log(`[F5 Bash] Executing: ${command}`);
-
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: auth },
-      agent: httpsAgent,
-      body: JSON.stringify(body)
-    });
-
-    if (!resp.ok) {
-      const txt = await resp.text();
-      throw new Error(`Bash command failed (${resp.status}): ${txt}`);
-    }
-    const json = await resp.json();
-    return json.commandResult || "";
+    if (ENABLE_F5_LOG) console.log(`[List Policy] Executing: ${command}`);
+    const data = await f5RequestUtil('POST', '/bash', body, opts);
+    return data?.commandResult || "";
   };
 
   try {
-    // 场景 1: List Policy (参考 KB 中的 tmsh list)
-    if (action === 'list_policies') {
-      // 使用 one-line 参数可以让列表更紧凑，方便快速查看状态
-      const cmd = `tmsh list asm policy one-line`;
-      const output = await runBash(cmd);
-      
-      // 如果没有输出，提示用户
-      if (!output || output.trim().length === 0) {
-        return { content: [{ type: 'text', text: "No ASM policies found or empty output." }] };
-      }
-
-      return {
-        content: [{
-          type: 'text',
-          text: `[KB K00571548] ASM Policies List:\n\n${output}`
-        }]
-      };
+    // 使用 one-line 模式，输出精简，方便模型快速浏览
+    // awk '{print $3}' 是为了只提取策略名(可选优化)，但保留完整 one-line 更稳妥
+    const output = await runBash(`tmsh list asm policy one-line`);
+    
+    if (!output || output.trim().length === 0) {
+      return { content: [{ type: 'text', text: "No ASM policies found." }] };
     }
 
-    // 场景 2: View Policy Configuration (KB 流程: Save -> Read)
-    if (action === 'get_policy_config') {
-      if (!policy_name) throw new Error('Missing policy_name for get_policy_config action');
-
-      // 生成一个带时间戳的临时文件名，避免冲突
-      // 注意：policy_name 可能包含 /Common/ 前缀，作为文件名需要处理
-      const safeName = policy_name.replace(/\//g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-      const tempFileName = `mcp_export_${safeName}_${Date.now()}.xml`;
-      const tempFilePath = `/var/tmp/${tempFileName}`;
-
-      console.log(`[ASM] Step 1: Saving policy '${policy_name}' to ${tempFilePath}...`);
-      
-      // 步骤 1: 执行 save 命令 (KB: tmsh save asm policy [name] xml-file [path])
-      // 注意：这里我们使用 xml-file。KB 也提到了 min-xml-file (Compact)，如果 XML 依然太大，可以改用 min-xml-file
-      await runBash(`tmsh save asm policy ${policy_name} min-xml-file ${tempFilePath}`);
-
-      // 步骤 2: 读取文件内容
-      console.log(`[ASM] Step 2: Reading file content...`);
-      let xmlContent = await runBash(`cat ${tempFilePath}`);
-
-      // 步骤 3: 清理临时文件 (非常重要，防止填满磁盘)
-      console.log(`[ASM] Step 3: Cleaning up ${tempFilePath}...`);
-      // 这里的 rm 命令不需要等待结果
-      runBash(`rm -f ${tempFilePath}`).catch(err => console.error("Cleanup failed:", err));
-
-      if (!xmlContent) {
-        return { content: [{ type: 'text', text: `Error: Failed to read exported config for ${policy_name}` }] };
-      }
-
-      // 数据截断保护 (防止 Token 溢出)
-      // XML 通常很大，我们保留前 100k 字符，通常包含了 Blocking Settings 和主要的 Profile 设置
-      const MAX_CHARS = 100000;
-      if (xmlContent.length > MAX_CHARS) {
-        xmlContent = xmlContent.substring(0, MAX_CHARS) + `\n\n... [Output Truncated by MCP Server due to size limit] ...`;
-      }
-
-      return {
-        content: [{
-          type: 'text',
-          text: `[KB K00571548] Policy XML Configuration for '${policy_name}':\n\n${xmlContent}`
-        }]
-      };
-    }
-
-    return { content: [{ type: 'text', text: `Unknown action: ${action}` }] };
-
-  } catch (err) {
-    console.error("AWAF Tool Error:", err);
-    return { 
-      isError: true,
-      content: [{ type: 'text', text: `Operation failed: ${err.message}` }] 
+    return {
+      content: [{
+        type: 'text',
+        text: `Available AWAF Policies (Raw TMSH Output):\n\n${output}`
+      }]
     };
+  } catch (err) {
+    console.error("ListAwafPolicies Error:", err);
+    return { isError: true, content: [{ type: 'text', text: `Failed to list policies: ${err.message}` }] };
   }
 }
 
-/////////////////// test for awaf ////////////////
+// ==========================================
+// AWAF 工具 2: View Policy Config (查看策略详情 - Compact)
+// ==========================================
+async function runViewAwafPolicyConfig(opts) {
+  const { policy_name, f5_url, f5_username, f5_password } = opts;
+
+  if (!policy_name) {
+    return { isError: true, content: [{ type: 'text', text: "Error: policy_name is required." }] };
+  }
+
+  const runBash = async (command) => {
+    const body = { command: "run", utilCmdArgs: `-c "${command}"` };
+    if (ENABLE_F5_LOG) console.log(`[View Config] Executing: ${command}`);
+    
+    const data = await f5RequestUtil('POST', '/bash', body, opts);
+    return data?.commandResult || "";
+  };
+
+  try {
+    // 1. 生成安全的文件名 (处理 /Common/ 前缀，避免路径错误)
+    const safeName = policy_name.replace(/\//g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const tempFileName = `mcp_view_${safeName}_${Date.now()}.xml`;
+    const tempFilePath = `/var/tmp/${tempFileName}`;
+
+    console.log(`[View Config] Exporting ${policy_name} to ${tempFilePath} (min-xml-file)...`);
+
+    // 2. 核心逻辑：Save (Compact) -> Read -> Delete
+    // 使用 min-xml-file 参数获取极简配置（只包含修改项）
+    // 使用 && 连接命令，确保顺序执行，原子性操作
+    const commandChain = `tmsh save asm policy ${policy_name} min-xml-file ${tempFilePath} && cat ${tempFilePath} && rm -f ${tempFilePath}`;
+    
+    let xmlContent = await runBash(commandChain);
+
+    if (!xmlContent || xmlContent.trim().length === 0) {
+      return { 
+        content: [{ 
+          type: 'text', 
+          text: `Error: No content returned. Please verify that the policy name '${policy_name}' is correct (check 'listAwafPolicies' output).` 
+        }] 
+      };
+    }
+
+    // 3. 截断保护 (虽然 min-xml 很小，但为了防止超大策略，还是加个保险)
+    const MAX_CHARS = 500000;
+    if (xmlContent.length > MAX_CHARS) {
+      xmlContent = xmlContent.substring(0, MAX_CHARS) + `\n\n... [Truncated due to size limit] ...`;
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Configuration for '${policy_name}' (Compact XML):\n\n${xmlContent}`
+      }]
+    };
+
+  } catch (err) {
+    console.error("ViewAwafPolicyConfig Error:", err);
+    return { isError: true, content: [{ type: 'text', text: `Operation failed: ${err.message}` }] };
+  }
+}
+
 
 
 // ===== 工具声明 =====
@@ -1126,7 +1115,7 @@ const tools = [
     handler: runTcpdump
   },{
     name: 'viewConfig',
-    description: 'Retrieve and analyze F5 configuration files to audit network and application settings. \n' +
+    description: 'Retrieve and analyze F5 LTM configuration files to audit network and application settings. \n' +
                  'Files content explanation:\n' +
                  '- **running_config (tmsh list)**: The active configuration currently in memory. This is what is processing traffic NOW.\n' +
                  '- **saved_ltm_file (/config/bigip.conf)**: Contains high-level traffic management objects: Virtual Servers, Pools, Monitors, Profiles, and iRules.\n' +
@@ -1206,33 +1195,40 @@ const tools = [
     },
     handler: runGetSystemLogs
   },{
-    name: 'viewAwafConfig',
-    description: 'Manage and Inspect F5 ASM (AWAF) Policies following KB K00571548 workflow.\n' +
-                 '1. "list_policies": Lists all ASM policies using "tmsh list asm policy".\n' +
-                 '2. "get_policy_config": Exports the full policy to a temporary XML file (tmsh save xml-file), reads it, and cleans it up. This provides the most complete configuration view.',
+    name: 'listAwafPolicies',
+    description: 'List all available F5 ASM (AWAF) policies on the device. \n' +
+                 'CRITICAL INSTRUCTION: Always run this tool FIRST to verify the policy name before using "viewAwafPolicyConfig". \n'
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL' },
+        f5_username: { type: 'string', description: 'F5 username' },
+        f5_password: { type: 'string', description: 'F5 password' }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password'],
+      additionalProperties: false
+    },
+    handler: runListAwafPolicies
+  },
+  {
+    name: 'viewAwafPolicyConfig',
+    description: 'Retrieve the detailed configuration of a SPECIFIC ASM policy in Compact XML format. \n',
     inputSchema: {
       type: 'object',
       properties: {
         f5_url:      { type: 'string', description: 'F5 management URL' },
         f5_username: { type: 'string', description: 'F5 username' },
         f5_password: { type: 'string', description: 'F5 password' },
-        action:      { 
-          type: 'string', 
-          enum: ['list_policies', 'get_policy_config'],
-          description: 'Action to perform.' 
-        },
         policy_name: { 
           type: 'string', 
-          description: 'Required for "get_policy_config". The full path name of the policy (e.g. /Common/waftest).' 
+          description: 'The EXACT full path of the policy (e.g. /Common/waftest). Use "listAwafPolicies" to find this.' 
         }
       },
-      required: ['f5_url', 'f5_username', 'f5_password', 'action'],
+      required: ['f5_url', 'f5_username', 'f5_password', 'policy_name'],
       additionalProperties: false
     },
-    handler: runViewAwafConfig
+    handler: runViewAwafPolicyConfig
   }
-
-
 ];
 
 
@@ -1283,7 +1279,7 @@ app.post('/', async (req, res) => {
             logging: {}   // 可选：告诉 Client 我支持发日志
           },
           serverInfo: {
-            name: "f5ConfigServer",
+            name: "f5AwafMcpServer",
             version: "1.0.0"
           }
         }
