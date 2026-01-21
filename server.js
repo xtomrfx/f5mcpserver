@@ -868,15 +868,8 @@ async function runGetAwafEvents(opts) {
   
   const limit = top ? top : 20;
   
-  // 1. 手动拼接 URL (确保特殊字符不被过度转义)
-  // 开启 expandSubcollections=true 以获取完整嵌套信息
   let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
-  
-  // 2. Select: 既然字段名存疑，我们暂时【去掉 $select】
-  // 这样 F5 会返回所有可用字段，让我们在日志里看个清楚！
-  // query += `&$select=...`; // 暂时注释掉 select，获取全量字段进行调试
 
-  // 3. Filter 处理 (保持手动编码逻辑)
   if (filter_string) {
     let safeFilter = encodeURIComponent(filter_string);
     safeFilter = safeFilter
@@ -896,13 +889,11 @@ async function runGetAwafEvents(opts) {
       };
     }
 
+   
     // ============================================================
-    // 🚨 DEBUG 核心：打印第一条数据的“真相”
-    // 请在运行后，去 MCP Server 的后台终端看这条日志
-    // ============================================================
-    console.log("\n🔥🔥🔥 [DEBUG] F5 Raw Event Structure (First Item) 🔥🔥🔥");
-    console.log(JSON.stringify(data.items[0], null, 2));
-    console.log("🔥🔥🔥 [DEBUG] End of Raw Event 🔥🔥🔥\n");
+   // console.log("[DEBUG] F5 Raw Event Structure (First Item)");
+    //console.log(JSON.stringify(data.items[0], null, 2));
+    //console.log(" [DEBUG] End of Raw Event \n");
     // ============================================================
 
     const events = data.items.map(e => {
@@ -955,7 +946,7 @@ async function runGetAwafEvents(opts) {
     return {
       content: [{
         type: 'text',
-        text: `Found ${events.length} recent AWAF events. \n⚠️ CHECK SERVER CONSOLE FOR DEBUG OUTPUT ⚠️\n\n${JSON.stringify(events, null, 2)}`
+        text: `Found ${events.length} recent AWAF events. \nCHECK SERVER CONSOLE FOR DEBUG OUTPUT \n\n${JSON.stringify(events, null, 2)}`
       }]
     };
 
