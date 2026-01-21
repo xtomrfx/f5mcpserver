@@ -2,10 +2,9 @@
   "name": "f5-mcp-server",
   "version": "1.0.0",
   "description": "基于 MCP 协议的 F5 Server 脚本，使用 Express 和 HTTPS 提供 MCP 接口",
-  "main": "server_ltm.js",
+  "main": "server.js",
   "bin": {
-    "f5awaf": "server_awaf.js",
-    "f5ltm": "server_ltm.js"
+    "mcp-server": "server.js"
   },
   "scripts": {
     "start": "node server.js"
