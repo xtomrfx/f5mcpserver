@@ -861,24 +861,37 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v6 冒号修复版)
+// AWAF 工具 3: Get AWAF Event Logs (v7 F5专用编码版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
   const limit = top ? top : 10;
   
-
+  // 1. 基础查询参数 (手动拼接，确保 $ 不被转义)
+  // orderby: time desc -> time%20desc
   let query = `?$orderby=time%20desc&$top=${limit}`;
-
+  
+  // 2. Select 参数
   query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
 
+  // 3. Filter 处理 (核心修复)
   if (filter_string) {
-
-    let encodedFilter = encodeURIComponent(filter_string);
-    encodedFilter = encodedFilter.replace(/%3A/g, ':'); 
+    // [F5 专用编码逻辑]
+    // 1. 先进行标准编码
+    let safeFilter = encodeURIComponent(filter_string);
     
-    query += `&$filter=${encodedFilter}`;
+    // 2. 【关键】还原 F5 需要识别的特殊字符
+    // %3A -> : (时间格式需要)
+    // %27 -> ' (字符串包裹需要)
+    // %24 -> $ (虽少见，但保留)
+    // %20 保持不变 (F5 需要 %20 作为空格)
+    safeFilter = safeFilter
+      .replace(/%3A/gi, ':')
+      .replace(/%27/gi, "'")
+      .replace(/%24/gi, '$');
+      
+    query += `&$filter=${safeFilter}`;
   }
 
   try {
@@ -925,7 +938,6 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
-
 
 // ==========================================
 // AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
