@@ -860,12 +860,12 @@ async function runViewAwafPolicyConfig(opts) {
 }
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (获取攻击日志 - 鲁棒版)
+// AWAF 工具 3: Get AWAF Event Logs 
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
-  const limit = top ? top : 10;
+  const limit = top ? top : 30;
   
   let query = `?$orderby=time desc&$top=${limit}`;
   // 请求所有字段
@@ -885,19 +885,29 @@ async function runGetAwafEvents(opts) {
     }
 
     // 处理字段缺失的情况
-    const events = data.items.map(e => ({
-      "Time": e.time || 'N/A', // 如果没有时间，显示 N/A
-      "Client IP": e.clientIp || 'N/A',
-      "Location": e.geoIp || 'Internal/Unknown', // 你的 10.x IP 没有 Geo 信息
-      "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'), // 防止 "GET undefined"
-      "Status": e.responseCode || 'N/A',
-      "Blocked": e.isRequestBlocked !== undefined ? e.isRequestBlocked : false, // 默认为 false
-      "Support ID": e.supportId || 'None', // 合法请求通常没有 Support ID
-      "Risk": e.violationRating || '0',
-      "Violations": (e.violations && e.violations.length > 0) 
-                    ? e.violations.map(v => v.violationName).join(", ") 
-                    : "None (Clean Traffic)"
-    }));
+    const events = data.items.map(e => {
+        // === 修复 Violations 解析逻辑 ===
+        // F5 API 有时返回 violationName，有时在 violationReference.name 中
+        let violationStr = "None (Clean Traffic)";
+        if (e.violations && e.violations.length > 0) {
+            violationStr = e.violations.map(v => {
+                // 优先找 violationReference.name，其次找 violationName，最后 Unknown
+                return v.violationReference?.name || v.violationName || 'Unknown Violation';
+            }).join(", ");
+        }
+
+        return {
+            "Time": e.time || 'N/A',
+            "Client IP": e.clientIp || 'N/A',
+            "Location": e.geoIp || 'Internal/Unknown',
+            "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'),
+            "Status": e.responseCode || 'N/A',
+            "Blocked": e.isRequestBlocked !== undefined ? e.isRequestBlocked : false,
+            "Support ID": e.supportId || 'None',
+            "Risk": e.violationRating || '0',
+            "Violations": violationStr
+        };
+    });
 
     return {
       content: [{
@@ -1386,7 +1396,7 @@ const tools = [
         f5_url:      { type: 'string', description: 'F5 management URL' },
         f5_username: { type: 'string', description: 'F5 username' },
         f5_password: { type: 'string', description: 'F5 password' },
-        top:         { type: 'integer', description: 'Number of logs to retrieve (Default: 10). Keep it small to save tokens.' },
+        top:         { type: 'integer', description: 'Number of logs to retrieve (Default: 30). Keep it small to save tokens.' },
         filter_string: { 
           type: 'string', 
           description: 'OData filter string to search for specific attacks. \n' +
