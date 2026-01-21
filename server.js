@@ -861,36 +861,38 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v7 F5专用编码版)
+// AWAF 工具 3: Get AWAF Event Logs (v8 纯手工拼接版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
   const limit = top ? top : 10;
   
-  // 1. 基础查询参数 (手动拼接，确保 $ 不被转义)
-  // orderby: time desc -> time%20desc
-  let query = `?$orderby=time%20desc&$top=${limit}`;
+  // [核心修复] 完全手动拼接字符串，确保 $ 符号不被转义
+  // 1. $orderby (注意空格必须转为 %20)
+  let query = `?$orderby=time%20desc`;
   
-  // 2. Select 参数
+  // 2. $top
+  query += `&$top=${limit}`;
+  
+  // 3. $select (F5 需要字面量的逗号)
   query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
 
-  // 3. Filter 处理 (核心修复)
+  // 4. $filter (最关键的部分)
   if (filter_string) {
-    // [F5 专用编码逻辑]
-    // 1. 先进行标准编码
+    // 先进行标准编码，处理中文、空格等
     let safeFilter = encodeURIComponent(filter_string);
     
-    // 2. 【关键】还原 F5 需要识别的特殊字符
-    // %3A -> : (时间格式需要)
-    // %27 -> ' (字符串包裹需要)
-    // %24 -> $ (虽少见，但保留)
-    // %20 保持不变 (F5 需要 %20 作为空格)
+    // [兼容性补丁] 还原 F5 OData 必须的特殊字符
+    // 还原冒号 : (时间格式 2026-01-01T00:00:00Z 需要)
+    // 还原单引号 ' (字符串值需要)
+    // 还原 $ (虽然 filter 值里很少有 $, 但以防万一)
     safeFilter = safeFilter
       .replace(/%3A/gi, ':')
       .replace(/%27/gi, "'")
       .replace(/%24/gi, '$');
       
+    // 手动拼接 &$filter=，确保 key 是字面量
     query += `&$filter=${safeFilter}`;
   }
 
@@ -908,6 +910,7 @@ async function runGetAwafEvents(opts) {
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
+                // 优先取引用名称
                 if (v.violationReference && v.violationReference.name) return v.violationReference.name;
                 if (v.violationName) return v.violationName;
                 return 'Unknown Violation';
@@ -922,6 +925,7 @@ async function runGetAwafEvents(opts) {
             "Status": e.responseCode || 'N/A',
             "Blocked": e.isRequestBlocked !== undefined ? e.isRequestBlocked : false,
             "Support ID": e.supportId || 'None',
+            // 现在 $select 生效了，e.violationRating 应该有值了
             "Risk": (e.violationRating !== undefined && e.violationRating !== null) ? e.violationRating.toString() : '0',
             "Violations": violationStr
         };
@@ -938,6 +942,7 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
+
 
 // ==========================================
 // AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
