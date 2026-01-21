@@ -860,18 +860,21 @@ async function runViewAwafPolicyConfig(opts) {
 }
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs 
+// AWAF 工具 3: Get AWAF Event Logs
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
-  const limit = top ? top : 30;
+  const limit = top ? top : 10;
   
-  let query = `?$orderby=time desc&$top=${limit}`;
+  // [修复点 1] 必须使用 %20 代替空格，防止 URL 解析中断导致 filter 失效
+  let query = `?$orderby=time%20desc&$top=${limit}`;
+  
   // 请求所有字段
   query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
 
   if (filter_string) {
+    // 这里的 encodeURIComponent 是正确的，它会处理 filter 内部的空格和特殊字符
     query += `&$filter=${encodeURIComponent(filter_string)}`;
   }
 
@@ -884,15 +887,15 @@ async function runGetAwafEvents(opts) {
       };
     }
 
-    // 处理字段缺失的情况
     const events = data.items.map(e => {
-        // === 修复 Violations 解析逻辑 ===
-        // F5 API 有时返回 violationName，有时在 violationReference.name 中
+        // [修复点 2] 增强 Violations 解析，处理 F5 API 返回格式不一致的问题
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
-                // 优先找 violationReference.name，其次找 violationName，最后 Unknown
-                return v.violationReference?.name || v.violationName || 'Unknown Violation';
+                // 优先尝试从引用对象中获取名称，其次尝试直接获取
+                if (v.violationReference && v.violationReference.name) return v.violationReference.name;
+                if (v.violationName) return v.violationName;
+                return 'Unknown Violation';
             }).join(", ");
         }
 
@@ -904,7 +907,8 @@ async function runGetAwafEvents(opts) {
             "Status": e.responseCode || 'N/A',
             "Blocked": e.isRequestBlocked !== undefined ? e.isRequestBlocked : false,
             "Support ID": e.supportId || 'None',
-            "Risk": e.violationRating || '0',
+            // [修复点 3] 确保 Risk 有值
+            "Risk": (e.violationRating !== undefined && e.violationRating !== null) ? e.violationRating.toString() : '0',
             "Violations": violationStr
         };
     });
