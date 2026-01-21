@@ -861,34 +861,31 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v4 URLSearchParams 终极修复版)
+// AWAF 工具 3: Get AWAF Event Logs (v5 终极修正版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
-  const limit = top ? top : 30;
-  const params = new URLSearchParams();
+  const limit = top ? top : 10;
   
-  params.append('$orderby', 'time desc');
-  params.append('$top', limit);
-  params.append('$select', 'id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations');
+  let query = `?$orderby=time%20desc&$top=${limit}`;
+  
 
+  query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
 
   if (filter_string) {
-    params.append('$filter', filter_string);
+    query += `&$filter=${encodeURIComponent(filter_string)}`;
   }
 
-  const queryString = params.toString().replace(/\+/g, '%20');
-
   try {
-
-    const data = await f5RequestAsm('GET', `/events/requests?${queryString}`, null, opts);   
+    const data = await f5RequestAsm('GET', `/events/requests${query}`, null, opts);
     
     if (!data || !data.items || data.items.length === 0) {
       return { 
         content: [{ type: 'text', text: "No ASM event logs found matching the criteria." }] 
       };
     }
+
     const events = data.items.map(e => {
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
@@ -898,6 +895,7 @@ async function runGetAwafEvents(opts) {
                 return 'Unknown Violation';
             }).join(", ");
         }
+
         return {
             "Time": e.time || 'N/A',
             "Client IP": e.clientIp || 'N/A',
@@ -922,7 +920,6 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
-
 
 
 
