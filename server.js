@@ -147,7 +147,7 @@ async function f5RequestSys(method, path, body, opts) {
   }
 }
 
-// ===== 新增：Util 模块请求函数 (用于执行 bash/tcpdump) =====
+// ===== Util 模块请求函数 (用于执行 bash/tcpdump) =====
 async function f5RequestUtil(method, path, body, opts) {
   const { f5_url, f5_username, f5_password } = opts;
   // 注意：这里路径是 /mgmt/tm/util
@@ -196,6 +196,50 @@ async function f5RequestUtil(method, path, body, opts) {
     return null;
   }
 }
+
+
+// ===== ASM 模块专用请求函数 =====
+async function f5RequestAsm(method, path, body, opts) {
+  const { f5_url, f5_username, f5_password } = opts;
+  const url = `${f5_url}/mgmt/tm/asm${path}`; // 注意前缀是 /mgmt/tm/asm
+  const auth = 'Basic ' + Buffer.from(`${f5_username}:${f5_password}`).toString('base64');
+  const headers = { 'Content-Type': 'application/json', Authorization: auth };
+
+  if (ENABLE_F5_LOG) {
+    console.log(`\n----- F5 (ASM) REQUEST -----`);
+    console.log(`Method: ${method} URL: ${url}`);
+  }
+
+  try {
+    const resp = await fetch(url, {
+      method,
+      headers,
+      agent: httpsAgent,
+      body: body ? JSON.stringify(body) : null
+    });
+    const respText = await resp.text();
+
+    if (ENABLE_F5_LOG) {
+      console.log(`Status: ${resp.status}`);
+      // 日志截断，防止 log 太长
+      console.log(`Body: ${respText.length > 500 ? respText.substring(0, 500) + '...' : respText}`);
+      console.log(`----- END ASM REQUEST -----\n`);
+    }
+
+    if (!resp.ok) {
+      throw new Error(`ASM API Error ${resp.status}: ${respText}`);
+    }
+    return JSON.parse(respText);
+  } catch (err) {
+    console.error("ASM Request Failed:", err);
+    throw new Error(`ASM request failed: ${err.message}`);
+  }
+}
+
+
+
+
+
 
 // ===== 工具实现 =====
 async function runConfigurePool(opts) {
@@ -815,6 +859,110 @@ async function runViewAwafPolicyConfig(opts) {
   }
 }
 
+// ==========================================
+// AWAF 工具 3: Get AWAF Event Logs (获取攻击日志 - 鲁棒版)
+// ==========================================
+async function runGetAwafEvents(opts) {
+  const { top, filter_string } = opts;
+  
+  const limit = top ? top : 10;
+  
+  let query = `?$orderby=time desc&$top=${limit}`;
+  // 请求所有字段
+  query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
+
+  if (filter_string) {
+    query += `&$filter=${encodeURIComponent(filter_string)}`;
+  }
+
+  try {
+    const data = await f5RequestAsm('GET', `/events/requests${query}`, null, opts);
+    
+    if (!data || !data.items || data.items.length === 0) {
+      return { 
+        content: [{ type: 'text', text: "No ASM event logs found matching the criteria." }] 
+      };
+    }
+
+    // 处理字段缺失的情况
+    const events = data.items.map(e => ({
+      "Time": e.time || 'N/A', // 如果没有时间，显示 N/A
+      "Client IP": e.clientIp || 'N/A',
+      "Location": e.geoIp || 'Internal/Unknown', // 你的 10.x IP 没有 Geo 信息
+      "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'), // 防止 "GET undefined"
+      "Status": e.responseCode || 'N/A',
+      "Blocked": e.isRequestBlocked !== undefined ? e.isRequestBlocked : false, // 默认为 false
+      "Support ID": e.supportId || 'None', // 合法请求通常没有 Support ID
+      "Risk": e.violationRating || '0',
+      "Violations": (e.violations && e.violations.length > 0) 
+                    ? e.violations.map(v => v.violationName).join(", ") 
+                    : "None (Clean Traffic)"
+    }));
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Found ${events.length} recent AWAF events:\n${JSON.stringify(events, null, 2)}`
+      }]
+    };
+
+  } catch (err) {
+    return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
+  }
+}
+
+
+// ==========================================
+// AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
+// ==========================================
+async function runGetAwafEventDetail(opts) {
+  const { event_id } = opts;
+  
+  if (!event_id) {
+    return { isError: true, content: [{ type: 'text', text: "Error: event_id is required." }] };
+  }
+
+  try {
+    console.log(`[Event Detail] Fetching full details for ID: ${event_id}`);
+    
+    // 使用你验证过的 expandSubcollections=true 参数
+    const data = await f5RequestAsm('GET', `/events/requests/${event_id}?expandSubcollections=true`, null, opts);
+    
+    if (!data || !data.id) {
+      return { content: [{ type: 'text', text: `Error: Event ID '${event_id}' not found.` }] };
+    }
+
+    // === 智能提取核心证据 ===
+    // 原始 JSON 太大，我们只提取对安全分析最有用的字段，防止 Token 浪费
+    const analysisData = {
+      "Time": data.requestDatetime,
+      "Client": `${data.clientIp}:${data.clientPort}`,
+      "Target": `${data.method} ${data.url}`,
+      "Action": data.enforcementState?.isBlocked ? "🛑 BLOCKED" : "✅ PASSED",
+      "Risk Score": data.enforcementState?.rating,
+      "Attack Types": data.enforcementState?.attackTypeReferences 
+                      ? data.enforcementState.attackTypeReferences.map(a => a.name).join(', ') 
+                      : "None",
+      // 提取违规名称
+      "Violations": data.violations 
+                    ? data.violations.map(v => v.violationReference?.name || "Unknown").join(', ') 
+                    : "None",
+      // 🌟 最关键的：原始攻击包（Payload）
+      "Raw_Request_Payload": data.rawRequest?.httpRequestUnescaped || "Not captured (size limit or setting)"
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Attack Evidence for Event ${event_id}:\n${JSON.stringify(analysisData, null, 2)}`
+      }]
+    };
+
+  } catch (err) {
+    console.error("EventDetail Error:", err);
+    return { isError: true, content: [{ type: 'text', text: `Failed to get event details: ${err.message}` }] };
+  }
+}
 
 
 // ===== 工具声明 =====
@@ -1228,6 +1376,56 @@ const tools = [
       additionalProperties: false
     },
     handler: runViewAwafPolicyConfig
+  },{
+    name: 'getAwafAttackLog',
+    description: 'Retrieve and analyze F5 AWAF (ASM) security event logs. \n' +
+                 'Returns a summary of recent attacks including Client IP, Violation Type, and Blocking Status.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL' },
+        f5_username: { type: 'string', description: 'F5 username' },
+        f5_password: { type: 'string', description: 'F5 password' },
+        top:         { type: 'integer', description: 'Number of logs to retrieve (Default: 10). Keep it small to save tokens.' },
+        filter_string: { 
+          type: 'string', 
+          description: 'OData filter string to search for specific attacks. \n' +
+                       '*** AVAILABLE FIELDS ***: \n' +
+                       '- violationRating (1-5, where 5 is critical)\n' +
+                       '- time (format: YYYY-MM-DDThh:mm:ssZ, e.g., \'2026-01-21T00:00:00Z\')\n' +
+                       '- clientIp\n' +
+                       '- isRequestBlocked (true/false)\n' +
+                       '- supportId\n\n' +
+                       '*** EXAMPLES ***:\n' +
+                       '- High Risk Today: "violationRating ge 4 and time ge \'2026-01-21T00:00:00Z\'"\n' +
+                       '- Specific IP: "clientIp eq \'192.168.1.5\'"\n' +
+                       '- Blocked Only: "isRequestBlocked eq true"'
+        }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password'],
+      additionalProperties: false
+    },
+    handler: runGetAwafEvents
+  },{
+    name: 'getAwafEventDetail',
+    description: 'Retrieve the FULL details (including raw HTTP request payload) for a specific AWAF event ID. \n' +
+                 'PREREQUISITE: You MUST run "getAwafAttackLog" first to get the "id" (Support ID is NOT the event ID). \n' +
+                 'Use this to inspect the actual attack payload (e.g., SQL injection strings, XSS scripts) to determine if it is a false positive.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:      { type: 'string', description: 'F5 management URL' },
+        f5_username: { type: 'string', description: 'F5 username' },
+        f5_password: { type: 'string', description: 'F5 password' },
+        event_id:    { 
+          type: 'string', 
+          description: 'The numeric Event ID (e.g., "2078111447904211732"). Obtain this from "getAwafAttackLog".' 
+        }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password', 'event_id'],
+      additionalProperties: false
+    },
+    handler: runGetAwafEventDetail
   }
 ];
 
