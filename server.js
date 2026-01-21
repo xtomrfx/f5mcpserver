@@ -859,47 +859,45 @@ async function runViewAwafPolicyConfig(opts) {
   }
 }
 
+
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v3 修复版)
+// AWAF 工具 3: Get AWAF Event Logs (v4 URLSearchParams 终极修复版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
   const limit = top ? top : 30;
+  const params = new URLSearchParams();
   
-  // [修复点 1] 必须使用 %20 代替空格，否则整个 query string 可能会失效
-  let query = `?$orderby=time%20desc&$top=${limit}`;
-  
-  // 请求所有字段
-  query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
+  params.append('$orderby', 'time desc');
+  params.append('$top', limit);
+  params.append('$select', 'id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations');
+
 
   if (filter_string) {
-    // encodeURIComponent 会正确处理 filter 字符串中的空格和特殊字符
-    query += `&$filter=${encodeURIComponent(filter_string)}`;
+    params.append('$filter', filter_string);
   }
 
+  const queryString = params.toString().replace(/\+/g, '%20');
+
   try {
-    const data = await f5RequestAsm('GET', `/events/requests${query}`, null, opts);
+
+    const data = await f5RequestAsm('GET', `/events/requests?${queryString}`, null, opts);   
     
     if (!data || !data.items || data.items.length === 0) {
       return { 
         content: [{ type: 'text', text: "No ASM event logs found matching the criteria." }] 
       };
     }
-
     const events = data.items.map(e => {
-        // [修复点 2] 增强 Violations 解析，优先读取引用名称
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
-                // 1. 尝试直接获取
-                if (v.violationName) return v.violationName;
-                // 2. 尝试从 reference 获取 (Curl输出中看到的是这种结构)
                 if (v.violationReference && v.violationReference.name) return v.violationReference.name;
+                if (v.violationName) return v.violationName;
                 return 'Unknown Violation';
             }).join(", ");
         }
-
         return {
             "Time": e.time || 'N/A',
             "Client IP": e.clientIp || 'N/A',
@@ -908,7 +906,6 @@ async function runGetAwafEvents(opts) {
             "Status": e.responseCode || 'N/A',
             "Blocked": e.isRequestBlocked !== undefined ? e.isRequestBlocked : false,
             "Support ID": e.supportId || 'None',
-            // [修复点 3] 确保 Risk 显示正常
             "Risk": (e.violationRating !== undefined && e.violationRating !== null) ? e.violationRating.toString() : '0',
             "Violations": violationStr
         };
@@ -925,6 +922,9 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
+
+
+
 
 // ==========================================
 // AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
