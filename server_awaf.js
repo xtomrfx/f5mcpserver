@@ -1197,7 +1197,7 @@ const tools = [
   },{
     name: 'listAwafPolicies',
     description: 'List all available F5 ASM (AWAF) policies on the device. \n' +
-                 'CRITICAL INSTRUCTION: Always run this tool FIRST to verify the policy name before using "viewAwafPolicyConfig". \n'
+                 'CRITICAL INSTRUCTION: Always run this tool FIRST to verify the policy name before using "viewAwafPolicyConfig". \n',
     inputSchema: {
       type: 'object',
       properties: {
