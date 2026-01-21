@@ -861,34 +861,33 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v10 双剑合璧版)
+// AWAF 工具 3: Get AWAF Event Logs (v11 Debug 显影版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
-  // 展开模式下数据量大，建议默认少取一点
   const limit = top ? top : 20;
   
-  // [关键组合 1] 手动拼接 URL (避开 $ 转义问题)
-  // [关键组合 2] 添加 expandSubcollections=true (强制 API 返回 rating 和 time)
+  // 1. 手动拼接 URL (确保特殊字符不被过度转义)
+  // 开启 expandSubcollections=true 以获取完整嵌套信息
   let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
   
-  // Select 依然保留，作为最佳实践
-  query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
+  // 2. Select: 既然字段名存疑，我们暂时【去掉 $select】
+  // 这样 F5 会返回所有可用字段，让我们在日志里看个清楚！
+  // query += `&$select=...`; // 暂时注释掉 select，获取全量字段进行调试
 
-  // Filter 处理 (保持 v8 的手动编码逻辑，这是目前验证最稳的)
+  // 3. Filter 处理 (保持手动编码逻辑)
   if (filter_string) {
     let safeFilter = encodeURIComponent(filter_string);
     safeFilter = safeFilter
-      .replace(/%3A/gi, ':')  // 还原冒号 (时间格式)
-      .replace(/%27/gi, "'")  // 还原单引号 (字符串值)
+      .replace(/%3A/gi, ':')  // 还原冒号
+      .replace(/%27/gi, "'")  // 还原单引号
       .replace(/%24/gi, '$'); // 还原 $
       
     query += `&$filter=${safeFilter}`;
   }
 
   try {
-    // 这里的 path 不需要再加参数，因为上面 query 已经拼全了
     const data = await f5RequestAsm('GET', `/events/requests${query}`, null, opts);
     
     if (!data || !data.items || data.items.length === 0) {
@@ -897,42 +896,54 @@ async function runGetAwafEvents(opts) {
       };
     }
 
+    // ============================================================
+    // 🚨 DEBUG 核心：打印第一条数据的“真相”
+    // 请在运行后，去 MCP Server 的后台终端看这条日志
+    // ============================================================
+    console.log("\n🔥🔥🔥 [DEBUG] F5 Raw Event Structure (First Item) 🔥🔥🔥");
+    console.log(JSON.stringify(data.items[0], null, 2));
+    console.log("🔥🔥🔥 [DEBUG] End of Raw Event 🔥🔥🔥\n");
+    // ============================================================
+
     const events = data.items.map(e => {
-        // 1. Violations 解析
+        // Violations 解析
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
-                // 优先取引用名称
+                // 优先取引用名称，F5 结构多变，多试几个
                 if (v.violationReference && v.violationReference.name) return v.violationReference.name;
                 if (v.violationName) return v.violationName;
                 return 'Unknown Violation';
             }).join(", ");
         }
 
-        // 2. [关键修复] 智能提取 Risk (兼容展开模式)
+        // [智能提取 Risk] - 增加更多备选路径
         let riskVal = '0';
-        // 优先从 enforcementState 获取，这是最准确的
         if (e.enforcementState && e.enforcementState.rating !== undefined) {
             riskVal = e.enforcementState.rating.toString();
-        } 
-        // 其次尝试顶层字段
-        else if (e.violationRating !== undefined && e.violationRating !== null) {
+        } else if (e.violationRating !== undefined && e.violationRating !== null) {
             riskVal = e.violationRating.toString();
+        } else if (e.rating !== undefined) { // 有些版本直接在根目录叫 rating
+            riskVal = e.rating.toString();
         }
 
-        // 3. [关键修复] 智能提取 Time (F5 列表模式叫 time, 展开模式叫 requestDatetime)
-        const eventTime = e.requestDatetime || e.time || 'N/A';
+        // [智能提取 Time] - 增加更多备选路径
+        const eventTime = e.requestDatetime || e.time || e.date_time || 'N/A';
 
-        // 4. [关键修复] 智能提取 Blocked 状态
+        // [智能提取 Blocked]
         const isBlocked = (e.enforcementState && e.enforcementState.isBlocked !== undefined) 
                           ? e.enforcementState.isBlocked 
-                          : (e.isRequestBlocked || false);
+                          : (e.isRequestBlocked !== undefined ? e.isRequestBlocked : false);
+
+        // [智能提取 URI]
+        // 有时候 uri 字段叫 fullPath, url, 或者 requestUrl
+        const uriVal = e.uri || e.url || e.fullPath || (e.method || 'Unknown Method');
 
         return {
             "Time": eventTime,
-            "Client IP": e.clientIp || 'N/A',
+            "Client IP": e.clientIp || e.ip_address || 'N/A',
             "Location": e.geoIp || 'Internal/Unknown',
-            "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'),
+            "URI": `${e.method || ''} ${uriVal}`.trim(),
             "Status": e.responseCode || 'N/A',
             "Blocked": isBlocked,
             "Support ID": e.supportId || 'None',
@@ -944,7 +955,7 @@ async function runGetAwafEvents(opts) {
     return {
       content: [{
         type: 'text',
-        text: `Found ${events.length} recent AWAF events:\n${JSON.stringify(events, null, 2)}`
+        text: `Found ${events.length} recent AWAF events. \n⚠️ CHECK SERVER CONSOLE FOR DEBUG OUTPUT ⚠️\n\n${JSON.stringify(events, null, 2)}`
       }]
     };
 
