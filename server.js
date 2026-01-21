@@ -861,38 +861,28 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v8 纯手工拼接版)
+// AWAF 工具 3: Get AWAF Event Logs (v9 强制展开详情版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
-  const limit = top ? top : 10;
+  const limit = top ? top : 10; // 建议保持较小，因为展开后数据量变大
   
-  // [核心修复] 完全手动拼接字符串，确保 $ 符号不被转义
-  // 1. $orderby (注意空格必须转为 %20)
-  let query = `?$orderby=time%20desc`;
+  // [核心策略] 添加 &expandSubcollections=true
+  // 这会强制 API 返回完整的嵌套结构（包括 enforcementState），解决字段缺失问题
+  let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
   
-  // 2. $top
-  query += `&$top=${limit}`;
-  
-  // 3. $select (F5 需要字面量的逗号)
-  query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
+  // 依然保留 select，虽然展开模式下它可能被忽略，但作为保险
+  query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
-  // 4. $filter (最关键的部分)
   if (filter_string) {
-    // 先进行标准编码，处理中文、空格等
+    // 保持 v8 的手动编码逻辑，这是唯一稳健的方式
     let safeFilter = encodeURIComponent(filter_string);
-    
-    // [兼容性补丁] 还原 F5 OData 必须的特殊字符
-    // 还原冒号 : (时间格式 2026-01-01T00:00:00Z 需要)
-    // 还原单引号 ' (字符串值需要)
-    // 还原 $ (虽然 filter 值里很少有 $, 但以防万一)
     safeFilter = safeFilter
       .replace(/%3A/gi, ':')
       .replace(/%27/gi, "'")
       .replace(/%24/gi, '$');
       
-    // 手动拼接 &$filter=，确保 key 是字面量
     query += `&$filter=${safeFilter}`;
   }
 
@@ -906,27 +896,37 @@ async function runGetAwafEvents(opts) {
     }
 
     const events = data.items.map(e => {
-        // Violations 解析逻辑
+        // Violations 解析
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
-                // 优先取引用名称
                 if (v.violationReference && v.violationReference.name) return v.violationReference.name;
                 if (v.violationName) return v.violationName;
                 return 'Unknown Violation';
             }).join(", ");
         }
 
+        // [智能 Rating 提取]
+        // 1. 优先看顶层 violationRating
+        // 2. 如果没有，去 enforcementState 里找 rating (这是展开后才有的)
+        // 3. 都没有就显示 'Unknown'
+        let riskVal = '0';
+        if (e.violationRating !== undefined && e.violationRating !== null) {
+            riskVal = e.violationRating.toString();
+        } else if (e.enforcementState && e.enforcementState.rating !== undefined) {
+            riskVal = e.enforcementState.rating.toString();
+        }
+
         return {
-            "Time": e.time || 'N/A',
+            "Time": e.time || e.requestDatetime || 'N/A', // 展开模式下可能是 requestDatetime
             "Client IP": e.clientIp || 'N/A',
             "Location": e.geoIp || 'Internal/Unknown',
             "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'),
             "Status": e.responseCode || 'N/A',
-            "Blocked": e.isRequestBlocked !== undefined ? e.isRequestBlocked : false,
+            // 展开模式下 isRequestBlocked 可能在 enforcementState.isBlocked
+            "Blocked": (e.isRequestBlocked !== undefined) ? e.isRequestBlocked : (e.enforcementState?.isBlocked || false),
             "Support ID": e.supportId || 'None',
-            // 现在 $select 生效了，e.violationRating 应该有值了
-            "Risk": (e.violationRating !== undefined && e.violationRating !== null) ? e.violationRating.toString() : '0',
+            "Risk": riskVal,
             "Violations": violationStr
         };
     });
@@ -942,7 +942,6 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
-
 
 // ==========================================
 // AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
