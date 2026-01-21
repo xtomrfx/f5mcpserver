@@ -861,32 +861,34 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v9 强制展开详情版)
+// AWAF 工具 3: Get AWAF Event Logs (v10 双剑合璧版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
-  const limit = top ? top : 10; // 建议保持较小，因为展开后数据量变大
+  // 展开模式下数据量大，建议默认少取一点
+  const limit = top ? top : 20;
   
-  // [核心策略] 添加 &expandSubcollections=true
-  // 这会强制 API 返回完整的嵌套结构（包括 enforcementState），解决字段缺失问题
+  // [关键组合 1] 手动拼接 URL (避开 $ 转义问题)
+  // [关键组合 2] 添加 expandSubcollections=true (强制 API 返回 rating 和 time)
   let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
   
-  // 依然保留 select，虽然展开模式下它可能被忽略，但作为保险
-  query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
+  // Select 依然保留，作为最佳实践
+  query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
+  // Filter 处理 (保持 v8 的手动编码逻辑，这是目前验证最稳的)
   if (filter_string) {
-    // 保持 v8 的手动编码逻辑，这是唯一稳健的方式
     let safeFilter = encodeURIComponent(filter_string);
     safeFilter = safeFilter
-      .replace(/%3A/gi, ':')
-      .replace(/%27/gi, "'")
-      .replace(/%24/gi, '$');
+      .replace(/%3A/gi, ':')  // 还原冒号 (时间格式)
+      .replace(/%27/gi, "'")  // 还原单引号 (字符串值)
+      .replace(/%24/gi, '$'); // 还原 $
       
     query += `&$filter=${safeFilter}`;
   }
 
   try {
+    // 这里的 path 不需要再加参数，因为上面 query 已经拼全了
     const data = await f5RequestAsm('GET', `/events/requests${query}`, null, opts);
     
     if (!data || !data.items || data.items.length === 0) {
@@ -896,35 +898,43 @@ async function runGetAwafEvents(opts) {
     }
 
     const events = data.items.map(e => {
-        // Violations 解析
+        // 1. Violations 解析
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
+                // 优先取引用名称
                 if (v.violationReference && v.violationReference.name) return v.violationReference.name;
                 if (v.violationName) return v.violationName;
                 return 'Unknown Violation';
             }).join(", ");
         }
 
-        // [智能 Rating 提取]
-        // 1. 优先看顶层 violationRating
-        // 2. 如果没有，去 enforcementState 里找 rating (这是展开后才有的)
-        // 3. 都没有就显示 'Unknown'
+        // 2. [关键修复] 智能提取 Risk (兼容展开模式)
         let riskVal = '0';
-        if (e.violationRating !== undefined && e.violationRating !== null) {
-            riskVal = e.violationRating.toString();
-        } else if (e.enforcementState && e.enforcementState.rating !== undefined) {
+        // 优先从 enforcementState 获取，这是最准确的
+        if (e.enforcementState && e.enforcementState.rating !== undefined) {
             riskVal = e.enforcementState.rating.toString();
+        } 
+        // 其次尝试顶层字段
+        else if (e.violationRating !== undefined && e.violationRating !== null) {
+            riskVal = e.violationRating.toString();
         }
 
+        // 3. [关键修复] 智能提取 Time (F5 列表模式叫 time, 展开模式叫 requestDatetime)
+        const eventTime = e.requestDatetime || e.time || 'N/A';
+
+        // 4. [关键修复] 智能提取 Blocked 状态
+        const isBlocked = (e.enforcementState && e.enforcementState.isBlocked !== undefined) 
+                          ? e.enforcementState.isBlocked 
+                          : (e.isRequestBlocked || false);
+
         return {
-            "Time": e.time || e.requestDatetime || 'N/A', // 展开模式下可能是 requestDatetime
+            "Time": eventTime,
             "Client IP": e.clientIp || 'N/A',
             "Location": e.geoIp || 'Internal/Unknown',
             "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'),
             "Status": e.responseCode || 'N/A',
-            // 展开模式下 isRequestBlocked 可能在 enforcementState.isBlocked
-            "Blocked": (e.isRequestBlocked !== undefined) ? e.isRequestBlocked : (e.enforcementState?.isBlocked || false),
+            "Blocked": isBlocked,
             "Support ID": e.supportId || 'None',
             "Risk": riskVal,
             "Violations": violationStr
