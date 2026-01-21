@@ -861,20 +861,24 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v5 终极修正版)
+// AWAF 工具 3: Get AWAF Event Logs (v6 冒号修复版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
   const limit = top ? top : 10;
   
+
   let query = `?$orderby=time%20desc&$top=${limit}`;
-  
 
   query += `&$select=id,supportId,time,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations`;
 
   if (filter_string) {
-    query += `&$filter=${encodeURIComponent(filter_string)}`;
+
+    let encodedFilter = encodeURIComponent(filter_string);
+    encodedFilter = encodedFilter.replace(/%3A/g, ':'); 
+    
+    query += `&$filter=${encodedFilter}`;
   }
 
   try {
@@ -887,6 +891,7 @@ async function runGetAwafEvents(opts) {
     }
 
     const events = data.items.map(e => {
+        // Violations 解析逻辑
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
@@ -922,7 +927,6 @@ async function runGetAwafEvents(opts) {
 }
 
 
-
 // ==========================================
 // AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
 // ==========================================
@@ -949,7 +953,7 @@ async function runGetAwafEventDetail(opts) {
       "Time": data.requestDatetime,
       "Client": `${data.clientIp}:${data.clientPort}`,
       "Target": `${data.method} ${data.url}`,
-      "Action": data.enforcementState?.isBlocked ? "🛑 BLOCKED" : "✅ PASSED",
+      "Action": data.enforcementState?.isBlocked ? " X BLOCKED" : "O PASSED",
       "Risk Score": data.enforcementState?.rating,
       "Attack Types": data.enforcementState?.attackTypeReferences 
                       ? data.enforcementState.attackTypeReferences.map(a => a.name).join(', ') 
