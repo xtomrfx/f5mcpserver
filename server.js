@@ -858,97 +858,172 @@ async function runViewAwafPolicyConfig(opts) {
     return { isError: true, content: [{ type: 'text', text: `Operation failed: ${err.message}` }] };
   }
 }
+// ==========================================
+// ==========================================
+// ==========================================
 
-
-/// ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v12 字段智能映射版)
+// ==========================================
+// AWAF 工具 3: Get AWAF Event Logs (v15 Debug 版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
-  
   const limit = top ? top : 20;
-  
-  // 1. 手动拼接 URL (确保特殊字符不被过度转义)
-  let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
-  
-  // 2. Select: 显式包含 id (即 Support ID)
-  query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
-  // 3. Filter 处理 (核心修复)
-  if (filter_string) {
-    // [关键修复] 自动纠错：F5 API 里的字段名是 'id'，而不是 'supportId'
-    // 如果过滤器里写了 supportId，我们帮它替换成 id
-    let correctedFilter = filter_string.replace(/\bsupportId\b/g, 'id');
+  // 1. 构建查询 Path
+  const buildQuery = (activeFilter) => {
+    // 强制展开 expandSubcollections=true 以获取完整数据 (Rating, Blocked)
+    let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
+    
+    query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
-    let safeFilter = encodeURIComponent(correctedFilter);
-    safeFilter = safeFilter
-      .replace(/%3A/gi, ':')  // 还原冒号
-      .replace(/%27/gi, "'")  // 还原单引号
-      .replace(/%24/gi, '$'); // 还原 $
-      
-    query += `&$filter=${safeFilter}`;
-  }
+    if (activeFilter) {
+      // 兼容性编码处理
+      let safeFilter = encodeURIComponent(activeFilter)
+        .replace(/%3A/gi, ':')  
+        .replace(/%27/gi, "'")  
+        .replace(/%24/gi, '$'); 
+
+      safeFilter = safeFilter.replace(/\bsupportId\b/g, 'id');
+      query += `&$filter=${safeFilter}`;
+    }
+    return `/events/requests${query}`;
+  };
+
+  const doQuery = async (activeFilter) => {
+    const path = buildQuery(activeFilter);
+    return await f5RequestAsm('GET', path, null, opts);
+  };
+
+  // URI 提取增强
+  const inferUri = (e) => {
+    if (e.uri && e.uri !== 'Unknown') return e.uri;
+    if (Array.isArray(e.violations) && e.violations.length > 0) {
+      const v0 = e.violations[0];
+      if (v0?.observedEntity?.name) return v0.observedEntity.name;
+      const buf = v0?.snippet?.buffer;
+      if (typeof buf === 'string') {
+        const m = buf.match(/^(?:GET|POST|PUT|DELETE|HEAD|PATCH)\s+(\S+)\s+HTTP\/\d/i);
+        if (m) return m[1];
+      }
+    }
+    return null;
+  };
+
+  // Blocked 状态提取增强
+  const inferBlocked = (e) => {
+    if (e?.enforcementState?.isBlocked === true) return true;
+    if (e?.isRequestBlocked === true) return true;
+    if (Array.isArray(e?.violations)) {
+      return e.violations.some(v => v?.enforcementState?.isBlocked === true);
+    }
+    return false;
+  };
+
+  // 拆分逻辑 (解决 F5 不支持 OR 的问题)
+  const trySplitOrFilter = (filter) => {
+    if (!filter) return null;
+    const timeMatch = filter.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
+    const timePart = timeMatch ? timeMatch[0] : "";
+    const parenMatch = filter.match(/\(([^()]+)\)/);
+    if (!parenMatch) return null;
+    const inside = parenMatch[1];
+    if (!/\s+or\s+/i.test(inside)) return null;
+    const parts = inside.split(/\s+or\s+/i).map(s => s.trim()).filter(Boolean);
+    if (parts.length < 2) return null;
+    return parts.map(p => timePart ? `${timePart} and ${p}` : p);
+  };
 
   try {
-    const data = await f5RequestAsm('GET', `/events/requests${query}`, null, opts);
-    
-    if (!data || !data.items || data.items.length === 0) {
-      return { 
-        content: [{ type: 'text', text: "No ASM event logs found matching the criteria." }] 
-      };
+    let data;
+    let warningMsg = "";
+
+    try {
+      data = await doQuery(filter_string);
+    } catch (err) {
+      if (err.message && err.message.includes('Compound expressions')) {
+        const subFilters = trySplitOrFilter(filter_string);
+        if (subFilters && subFilters.length >= 2) {
+          warningMsg = `\n⚠️ NOTE: Logic split into ${subFilters.length} parallel queries.`;
+          const results = await Promise.all(subFilters.map(f => doQuery(f).catch(e => ({ items: [] }))));
+          const merged = [];
+          const seen = new Set();
+          for (const r of results) {
+            if (!r || !r.items) continue;
+            for (const it of r.items) {
+              const id = it?.id || it?.supportId;
+              if (!id) continue;
+              if (seen.has(id)) continue;
+              seen.add(id);
+              merged.push(it);
+            }
+          }
+          data = { items: merged };
+        } else {
+          let fallbackFilter = "";
+          const timeMatchFallback = filter_string.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
+          if (timeMatchFallback) fallbackFilter = timeMatchFallback[0];
+          warningMsg = `\n⚠️ WARNING: Complex filter rejected. Fell back to simpler query.`;
+          data = await doQuery(fallbackFilter);
+        }
+      } else {
+        throw err;
+      }
     }
 
-    // ============================================================
+    if (!data || !data.items || data.items.length === 0) {
+      return { content: [{ type: 'text', text: `No ASM event logs found.${warningMsg}` }] };
+    }
+
+    // =======================================================
+    // 💡 DEBUG LOG START
+    // =======================================================
     console.log("[DEBUG] F5 Raw Event Structure (First Item)");
-    console.log(JSON.stringify(data.items[0], null, 2));
+    // 安全打印，防止 items 为空
+    if (data.items.length > 0) {
+        console.log(JSON.stringify(data.items[0], null, 2));
+    } else {
+        console.log("No items to debug.");
+    }
     console.log(" [DEBUG] End of Raw Event \n");
-    // ============================================================
+    // =======================================================
 
     const events = data.items.map(e => {
-        // Violations 解析
-        let violationStr = "None (Clean Traffic)";
-        if (e.violations && e.violations.length > 0) {
-            violationStr = e.violations.map(v => {
-                if (v.violationReference && v.violationReference.name) return v.violationReference.name;
-                if (v.violationName) return v.violationName;
-                return 'Unknown Violation';
-            }).join(", ");
-        }
+      let violationStr = "None (Clean Traffic)";
+      if (e.violations && e.violations.length > 0) {
+        violationStr = e.violations.map(v => {
+          if (v.violationReference && v.violationReference.name) return v.violationReference.name;
+          if (v.violationName) return v.violationName;
+          return 'Unknown Violation';
+        }).join(", ");
+      }
 
-        // Risk 提取
-        let riskVal = '0';
-        if (e.enforcementState && e.enforcementState.rating !== undefined) {
-            riskVal = e.enforcementState.rating.toString();
-        } else if (e.violationRating !== undefined && e.violationRating !== null) {
-            riskVal = e.violationRating.toString();
-        }
+      // [核心 Check] 这里的逻辑必须和 Debug 出来的 JSON 结构对齐
+      let riskVal = '0';
+      if (e.enforcementState && e.enforcementState.rating !== undefined) {
+          riskVal = String(e.enforcementState.rating); 
+      } else if (e.violationRating !== undefined && e.violationRating !== null) {
+          riskVal = String(e.violationRating);
+      }
 
-        // Time 提取
-        const eventTime = e.requestDatetime || e.time || 'N/A';
+      const blocked = inferBlocked(e);
 
-        // Blocked 提取
-        const isBlocked = (e.enforcementState && e.enforcementState.isBlocked !== undefined) 
-                          ? e.enforcementState.isBlocked 
-                          : (e.isRequestBlocked || false);
-
-        return {
-            "Time": eventTime,
-            "Client IP": e.clientIp || 'N/A',
-            "Location": e.geoIp || 'Internal/Unknown',
-            "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'),
-            "Status": e.responseCode || 'N/A',
-            "Blocked": isBlocked,
-            // [关键修复] Support ID 其实就是 id
-            "Support ID": e.supportId || e.id || 'None',
-            "Risk": riskVal,
-            "Violations": violationStr
-        };
+      return {
+        "Time": e.requestDatetime || e.time || 'N/A',
+        "Client IP": e.clientIp || 'N/A',
+        "Location": e.geoIp || 'Internal/Unknown',
+        "URI": inferUri(e) || (e.method || 'Unknown'),
+        "Status": e.responseCode || 'N/A',
+        "Blocked": blocked,
+        "Support ID": e.supportId || e.id || 'None',
+        "Risk": riskVal,
+        "Violations": violationStr
+      };
     });
 
     return {
       content: [{
         type: 'text',
-        text: `Found ${events.length} recent AWAF events:\n${JSON.stringify(events, null, 2)}`
+        text: `Found ${events.length} recent AWAF events.${warningMsg}\n${JSON.stringify(events, null, 2)}`
       }]
     };
 
@@ -956,6 +1031,14 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
+
+
+
+
+
+
+
+
 
 // ==========================================
 // AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
