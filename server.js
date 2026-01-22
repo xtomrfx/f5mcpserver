@@ -604,7 +604,7 @@ async function runViewConfig(opts) {
       content: [
         {
           type: 'text',
-          text: `Configuration Output (${config_scope || specific_module || 'full'}):\n(Auto-optimized for LLM analysis)\n\n${oufinalOutputtput}`
+          text: `Configuration Output (${config_scope || specific_module || 'full'}):\n(Auto-optimized for LLM analysis)\n\n${finalOutput}`
         }
       ]
     };
