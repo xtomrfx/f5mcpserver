@@ -567,7 +567,7 @@ async function runViewConfig(opts) {
   } else {
     // 默认为 tmsh list (内存中的运行配置)
     // 如果指定了模块 (如 ltm, net, sys)，则只显示该模块
-    const module = specific_module ? specific_module : '';
+    const module = specific_module ? specific_module : 'ltm';
     cmdString = `tmsh list ${module}`;
   }
 
@@ -604,7 +604,7 @@ async function runViewConfig(opts) {
       content: [
         {
           type: 'text',
-          text: `Configuration Output (${config_scope || specific_module || 'full'}):\n(Auto-optimized for LLM analysis)\n\n${output}`
+          text: `Configuration Output (${config_scope || specific_module || 'full'}):\n(Auto-optimized for LLM analysis)\n\n${oufinalOutputtput}`
         }
       ]
     };
