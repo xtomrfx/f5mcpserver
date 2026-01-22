@@ -859,30 +859,24 @@ async function runViewAwafPolicyConfig(opts) {
   }
 }
 // ==========================================
-// ==========================================
-// ==========================================
+
+
+
 
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v15 Debug 版)
+// AWAF 工具 3: Get AWAF Event Logs (v15 诊断版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   const limit = top ? top : 20;
 
-  // 1. 构建查询 Path
   const buildQuery = (activeFilter) => {
-    // 强制展开 expandSubcollections=true 以获取完整数据 (Rating, Blocked)
     let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
-    
     query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
     if (activeFilter) {
-      // 兼容性编码处理
       let safeFilter = encodeURIComponent(activeFilter)
-        .replace(/%3A/gi, ':')  
-        .replace(/%27/gi, "'")  
-        .replace(/%24/gi, '$'); 
-
+        .replace(/%3A/gi, ':').replace(/%27/gi, "'").replace(/%24/gi, '$');
       safeFilter = safeFilter.replace(/\bsupportId\b/g, 'id');
       query += `&$filter=${safeFilter}`;
     }
@@ -894,7 +888,7 @@ async function runGetAwafEvents(opts) {
     return await f5RequestAsm('GET', path, null, opts);
   };
 
-  // URI 提取增强
+  // URI 提取
   const inferUri = (e) => {
     if (e.uri && e.uri !== 'Unknown') return e.uri;
     if (Array.isArray(e.violations) && e.violations.length > 0) {
@@ -909,7 +903,7 @@ async function runGetAwafEvents(opts) {
     return null;
   };
 
-  // Blocked 状态提取增强
+  // Blocked 提取
   const inferBlocked = (e) => {
     if (e?.enforcementState?.isBlocked === true) return true;
     if (e?.isRequestBlocked === true) return true;
@@ -919,7 +913,6 @@ async function runGetAwafEvents(opts) {
     return false;
   };
 
-  // 拆分逻辑 (解决 F5 不支持 OR 的问题)
   const trySplitOrFilter = (filter) => {
     if (!filter) return null;
     const timeMatch = filter.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
@@ -975,19 +968,18 @@ async function runGetAwafEvents(opts) {
     }
 
     // =======================================================
-    // 💡 DEBUG LOG START
+    // 💡 诊断日志：打印第一条数据的原始结构
     // =======================================================
-    console.log("[DEBUG] F5 Raw Event Structure (First Item)");
-    // 安全打印，防止 items 为空
-    if (data.items.length > 0) {
-        console.log(JSON.stringify(data.items[0], null, 2));
+    console.log("[DEBUG] First Raw Item ID:", data.items[0].id);
+    if(data.items[0].enforcementState) {
+        console.log("[DEBUG] First Item enforcementState:", JSON.stringify(data.items[0].enforcementState, null, 2));
     } else {
-        console.log("No items to debug.");
+        console.log("[DEBUG] First Item enforcementState is MISSING/NULL");
     }
-    console.log(" [DEBUG] End of Raw Event \n");
     // =======================================================
 
-    const events = data.items.map(e => {
+    const events = data.items.map((e, index) => {
+      // 1. Violations
       let violationStr = "None (Clean Traffic)";
       if (e.violations && e.violations.length > 0) {
         violationStr = e.violations.map(v => {
@@ -997,21 +989,40 @@ async function runGetAwafEvents(opts) {
         }).join(", ");
       }
 
-      // [核心 Check] 这里的逻辑必须和 Debug 出来的 JSON 结构对齐
+      // [Risk 诊断逻辑]
       let riskVal = '0';
+      
+      // 仅针对第一条数据打印诊断信息
+      if (index === 0) {
+          console.log("--- Risk Extraction Diagnostic ---");
+          console.log("Check 1: e.enforcementState?", !!e.enforcementState);
+          if (e.enforcementState) {
+              console.log("Check 2: e.enforcementState.rating value:", e.enforcementState.rating);
+              console.log("Check 2 type:", typeof e.enforcementState.rating);
+          }
+      }
+
+      // 提取逻辑
       if (e.enforcementState && e.enforcementState.rating !== undefined) {
-          riskVal = String(e.enforcementState.rating); 
+          riskVal = String(e.enforcementState.rating);
       } else if (e.violationRating !== undefined && e.violationRating !== null) {
           riskVal = String(e.violationRating);
       }
 
+      if (index === 0) {
+          console.log("Final Risk Value:", riskVal);
+          console.log("----------------------------------");
+      }
+
       const blocked = inferBlocked(e);
+      const eventTime = e.requestDatetime || e.time || 'N/A';
+      const uri = inferUri(e);
 
       return {
-        "Time": e.requestDatetime || e.time || 'N/A',
+        "Time": eventTime,
         "Client IP": e.clientIp || 'N/A',
         "Location": e.geoIp || 'Internal/Unknown',
-        "URI": inferUri(e) || (e.method || 'Unknown'),
+        "URI": uri ? `${e.method || ''} ${uri}`.trim() : (e.method || 'Unknown'),
         "Status": e.responseCode || 'N/A',
         "Blocked": blocked,
         "Support ID": e.supportId || e.id || 'None',
@@ -1031,8 +1042,6 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
-
-
 
 
 
