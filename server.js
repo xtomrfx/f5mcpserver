@@ -862,21 +862,25 @@ async function runViewAwafPolicyConfig(opts) {
 
 
 
-
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v15 诊断版)
+// AWAF 工具 3: Get AWAF Event Logs (v16 去除Select版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   const limit = top ? top : 20;
 
+  // 1. 构建查询 Path
   const buildQuery = (activeFilter) => {
+    // [核心修复] 移除 $select 参数！
+    // 让 expandSubcollections=true 发挥全部威力，返回 enforcementState
     let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
-    query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
-
+    
     if (activeFilter) {
       let safeFilter = encodeURIComponent(activeFilter)
-        .replace(/%3A/gi, ':').replace(/%27/gi, "'").replace(/%24/gi, '$');
+        .replace(/%3A/gi, ':')  
+        .replace(/%27/gi, "'")  
+        .replace(/%24/gi, '$'); 
+
       safeFilter = safeFilter.replace(/\bsupportId\b/g, 'id');
       query += `&$filter=${safeFilter}`;
     }
@@ -888,7 +892,6 @@ async function runGetAwafEvents(opts) {
     return await f5RequestAsm('GET', path, null, opts);
   };
 
-  // URI 提取
   const inferUri = (e) => {
     if (e.uri && e.uri !== 'Unknown') return e.uri;
     if (Array.isArray(e.violations) && e.violations.length > 0) {
@@ -903,7 +906,6 @@ async function runGetAwafEvents(opts) {
     return null;
   };
 
-  // Blocked 提取
   const inferBlocked = (e) => {
     if (e?.enforcementState?.isBlocked === true) return true;
     if (e?.isRequestBlocked === true) return true;
@@ -967,19 +969,10 @@ async function runGetAwafEvents(opts) {
       return { content: [{ type: 'text', text: `No ASM event logs found.${warningMsg}` }] };
     }
 
-    // =======================================================
-    // 💡 诊断日志：打印第一条数据的原始结构
-    // =======================================================
-    console.log("[DEBUG] First Raw Item ID:", data.items[0].id);
-    if(data.items[0].enforcementState) {
-        console.log("[DEBUG] First Item enforcementState:", JSON.stringify(data.items[0].enforcementState, null, 2));
-    } else {
-        console.log("[DEBUG] First Item enforcementState is MISSING/NULL");
-    }
-    // =======================================================
+    // 保留 Debug 以验证 enforcementState 是否回归
+    console.log("[DEBUG] First Item enforcementState check:", !!data.items[0].enforcementState);
 
-    const events = data.items.map((e, index) => {
-      // 1. Violations
+    const events = data.items.map(e => {
       let violationStr = "None (Clean Traffic)";
       if (e.violations && e.violations.length > 0) {
         violationStr = e.violations.map(v => {
@@ -989,40 +982,21 @@ async function runGetAwafEvents(opts) {
         }).join(", ");
       }
 
-      // [Risk 诊断逻辑]
       let riskVal = '0';
-      
-      // 仅针对第一条数据打印诊断信息
-      if (index === 0) {
-          console.log("--- Risk Extraction Diagnostic ---");
-          console.log("Check 1: e.enforcementState?", !!e.enforcementState);
-          if (e.enforcementState) {
-              console.log("Check 2: e.enforcementState.rating value:", e.enforcementState.rating);
-              console.log("Check 2 type:", typeof e.enforcementState.rating);
-          }
-      }
-
-      // 提取逻辑
+      // 这里的逻辑现在应该能正常工作了，因为 enforcementState 回来了
       if (e.enforcementState && e.enforcementState.rating !== undefined) {
           riskVal = String(e.enforcementState.rating);
       } else if (e.violationRating !== undefined && e.violationRating !== null) {
           riskVal = String(e.violationRating);
       }
 
-      if (index === 0) {
-          console.log("Final Risk Value:", riskVal);
-          console.log("----------------------------------");
-      }
-
       const blocked = inferBlocked(e);
-      const eventTime = e.requestDatetime || e.time || 'N/A';
-      const uri = inferUri(e);
 
       return {
-        "Time": eventTime,
+        "Time": e.requestDatetime || e.time || 'N/A',
         "Client IP": e.clientIp || 'N/A',
         "Location": e.geoIp || 'Internal/Unknown',
-        "URI": uri ? `${e.method || ''} ${uri}`.trim() : (e.method || 'Unknown'),
+        "URI": inferUri(e) || (e.method || 'Unknown'),
         "Status": e.responseCode || 'N/A',
         "Blocked": blocked,
         "Support ID": e.supportId || e.id || 'None',
