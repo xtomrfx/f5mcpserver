@@ -860,9 +860,8 @@ async function runViewAwafPolicyConfig(opts) {
 }
 
 
-
 // ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v14 完美修正版)
+// AWAF 工具 3: Get AWAF Event Logs (v14 修复版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
@@ -870,33 +869,29 @@ async function runGetAwafEvents(opts) {
 
   // 1. 构建查询 Path
   const buildQuery = (activeFilter) => {
-    // 强制展开 expandSubcollections=true 以获取完整数据 (Rating, Blocked)
+    // [关键点 1] 强制展开 expandSubcollections=true 以获取完整数据 (Rating, Blocked)
     let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
     
-    // Select 字段列表
     query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
     if (activeFilter) {
-      // 兼容性编码处理
       let safeFilter = encodeURIComponent(activeFilter)
         .replace(/%3A/gi, ':')  
         .replace(/%27/gi, "'")  
         .replace(/%24/gi, '$'); 
 
-      // 自动修正 Support ID 字段名
       safeFilter = safeFilter.replace(/\bsupportId\b/g, 'id');
       query += `&$filter=${safeFilter}`;
     }
     return `/events/requests${query}`;
   };
 
-  // 2. 执行查询
   const doQuery = async (activeFilter) => {
     const path = buildQuery(activeFilter);
     return await f5RequestAsm('GET', path, null, opts);
   };
 
-  // 3. 从 violations/snippet 里硬核提取 URI
+  // URI 提取增强
   const inferUri = (e) => {
     if (e.uri && e.uri !== 'Unknown') return e.uri;
     if (Array.isArray(e.violations) && e.violations.length > 0) {
@@ -911,38 +906,27 @@ async function runGetAwafEvents(opts) {
     return null;
   };
 
-  // 4. 综合判断是否被阻断 (这就是解决 Blocked: false 的关键)
+  // Blocked 状态提取增强
   const inferBlocked = (e) => {
-    // 优先检查 enforcementState
     if (e?.enforcementState?.isBlocked === true) return true;
-    // 其次检查根目录
     if (e?.isRequestBlocked === true) return true;
-    // 最后检查子违规
     if (Array.isArray(e?.violations)) {
       return e.violations.some(v => v?.enforcementState?.isBlocked === true);
     }
     return false;
   };
 
-  // 5. 拆分逻辑: 解决 "Compound expressions" 报错
+  // 拆分逻辑 (解决 F5 不支持 OR 的问题)
   const trySplitOrFilter = (filter) => {
     if (!filter) return null;
-    
-    // 正则提取时间部分 (time ge '...')
     const timeMatch = filter.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
     const timePart = timeMatch ? timeMatch[0] : "";
-
-    // 提取括号内容 (A or B)
     const parenMatch = filter.match(/\(([^()]+)\)/);
     if (!parenMatch) return null;
-
     const inside = parenMatch[1];
     if (!/\s+or\s+/i.test(inside)) return null;
-
     const parts = inside.split(/\s+or\s+/i).map(s => s.trim()).filter(Boolean);
     if (parts.length < 2) return null;
-
-    // 组合成多个子查询
     return parts.map(p => timePart ? `${timePart} and ${p}` : p);
   };
 
@@ -951,20 +935,13 @@ async function runGetAwafEvents(opts) {
     let warningMsg = "";
 
     try {
-      // 尝试 1: 直接查询
       data = await doQuery(filter_string);
     } catch (err) {
-      // 捕获 API 不支持 OR 的错误
       if (err.message && err.message.includes('Compound expressions')) {
         const subFilters = trySplitOrFilter(filter_string);
-
         if (subFilters && subFilters.length >= 2) {
-          warningMsg = `\n⚠️ NOTE: Logic split into ${subFilters.length} parallel queries to bypass API limitations.`;
-          
-          // 并行查询所有子条件
+          warningMsg = `\n⚠️ NOTE: Logic split into ${subFilters.length} parallel queries.`;
           const results = await Promise.all(subFilters.map(f => doQuery(f).catch(e => ({ items: [] }))));
-
-          // 合并结果并去重
           const merged = [];
           const seen = new Set();
           for (const r of results) {
@@ -979,13 +956,10 @@ async function runGetAwafEvents(opts) {
           }
           data = { items: merged };
         } else {
-          // 无法拆分，智能降级：只查时间
           let fallbackFilter = "";
-          // 重新提取时间，确保变量作用域正确
           const timeMatchFallback = filter_string.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
           if (timeMatchFallback) fallbackFilter = timeMatchFallback[0];
-          
-          warningMsg = `\n⚠️ WARNING: Complex filter rejected. Fell back to simple query: "${fallbackFilter || 'ALL'}".`;
+          warningMsg = `\n⚠️ WARNING: Complex filter rejected. Fell back to simpler query.`;
           data = await doQuery(fallbackFilter);
         }
       } else {
@@ -997,27 +971,13 @@ async function runGetAwafEvents(opts) {
       return { content: [{ type: 'text', text: `No ASM event logs found.${warningMsg}` }] };
     }
 
+    // =======================================================
+    // 💡 DEBUG: 如果还不行，取消下面这行的注释看真相
+    // console.log("[DEBUG RAW]", JSON.stringify(data.items[0], null, 2));
+    // =======================================================
+
     const events = data.items.map(e => {
-      // === 字段提取核心逻辑 (修复 Risk=0 问题) ===
-      
-      // 1. Risk
-      let riskVal = '0';
-      if (e.enforcementState && e.enforcementState.rating !== undefined) {
-          riskVal = String(e.enforcementState.rating); // 这里必须从 enforcementState 取！
-      } else if (e.violationRating !== undefined && e.violationRating !== null) {
-          riskVal = String(e.violationRating);
-      }
-
-      // 2. Blocked
-      const blocked = inferBlocked(e);
-
-      // 3. Time (优先取 requestDatetime)
-      const eventTime = e.requestDatetime || e.time || 'N/A';
-
-      // 4. URI
-      const uri = inferUri(e);
-
-      // 5. Violations
+      // 1. Violations
       let violationStr = "None (Clean Traffic)";
       if (e.violations && e.violations.length > 0) {
         violationStr = e.violations.map(v => {
@@ -1027,11 +987,22 @@ async function runGetAwafEvents(opts) {
         }).join(", ");
       }
 
+      // [关键点 2] Risk 提取逻辑修复
+      let riskVal = '0';
+      if (e.enforcementState && e.enforcementState.rating !== undefined) {
+          riskVal = String(e.enforcementState.rating); // 优先读这里！
+      } else if (e.violationRating !== undefined && e.violationRating !== null) {
+          riskVal = String(e.violationRating);
+      }
+
+      // [关键点 3] Blocked 提取逻辑修复
+      const blocked = inferBlocked(e);
+
       return {
-        "Time": eventTime,
+        "Time": e.requestDatetime || e.time || 'N/A',
         "Client IP": e.clientIp || 'N/A',
         "Location": e.geoIp || 'Internal/Unknown',
-        "URI": uri ? `${e.method || ''} ${uri}`.trim() : (e.method || 'Unknown'),
+        "URI": inferUri(e) || (e.method || 'Unknown'),
         "Status": e.responseCode || 'N/A',
         "Blocked": blocked,
         "Support ID": e.supportId || e.id || 'None',
@@ -1051,6 +1022,8 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
+
+
 
 
 
