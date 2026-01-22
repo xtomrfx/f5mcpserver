@@ -867,7 +867,7 @@ async function runViewAwafPolicyConfig(opts) {
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
-  const limit = top ? top : 20;
+  const limit = top ? top : 50;
 
   // 1. 构建查询 Path
   const buildQuery = (activeFilter) => {
