@@ -860,95 +860,198 @@ async function runViewAwafPolicyConfig(opts) {
 }
 
 
-/// ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v12 字段智能映射版)
+//// ==========================================
+// AWAF 工具 3: Get AWAF Event Logs (v14 分治查询+深度推断版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
-  
-  const limit = top ? top : 20;
-  
-  // 1. 手动拼接 URL (确保特殊字符不被过度转义)
-  let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
-  
-  // 2. Select: 显式包含 id (即 Support ID)
-  query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
+  const limit = top ? top : 50;
 
-  // 3. Filter 处理 (核心修复)
-  if (filter_string) {
-    // [关键修复] 自动纠错：F5 API 里的字段名是 'id'，而不是 'supportId'
-    // 如果过滤器里写了 supportId，我们帮它替换成 id
-    let correctedFilter = filter_string.replace(/\bsupportId\b/g, 'id');
+  // 1. 构建查询 Path
+  const buildQuery = (activeFilter) => {
+    // 强制展开 expandSubcollections=true 以获取完整数据
+    let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
+    query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
-    let safeFilter = encodeURIComponent(correctedFilter);
-    safeFilter = safeFilter
-      .replace(/%3A/gi, ':')  // 还原冒号
-      .replace(/%27/gi, "'")  // 还原单引号
-      .replace(/%24/gi, '$'); // 还原 $
+    if (activeFilter) {
+      let safeFilter = encodeURIComponent(activeFilter)
+        .replace(/%3A/gi, ':')  // 还原冒号
+        .replace(/%27/gi, "'")  // 还原单引号
+        .replace(/%24/gi, '$'); // 还原 $
+
+      // 自动修正 Support ID 字段名
+      safeFilter = safeFilter.replace(/\bsupportId\b/g, 'id');
+      query += `&$filter=${safeFilter}`;
+    }
+    return `/events/requests${query}`;
+  };
+
+  // 2. 执行查询
+  const doQuery = async (activeFilter) => {
+    const path = buildQuery(activeFilter);
+    return await f5RequestAsm('GET', path, null, opts);
+  };
+
+  // 3. [增强] 从 violations/snippet 里硬核提取 URI
+  const inferUri = (e) => {
+    // 优先 1: 顶层 uri (如果 F5 给的话)
+    if (e.uri && e.uri !== 'Unknown') return e.uri;
+    
+    // 优先 2: 从 violations 里找 observedEntity (通常是 URL)
+    if (Array.isArray(e.violations)) {
+      const v0 = e.violations[0];
+      if (v0?.observedEntity?.name) return v0.observedEntity.name;
       
-    query += `&$filter=${safeFilter}`;
-  }
+      // 优先 3: 从 snippet buffer (原始数据包片段) 中正则提取
+      // 形如: "GET /index.php?id=1' OR 1=1 -- HTTP/1.1\r\n"
+      const buf = v0?.snippet?.buffer;
+      if (typeof buf === 'string') {
+        // 匹配 GET/POST 后面的路径
+        const m = buf.match(/^(?:GET|POST|PUT|DELETE|HEAD|PATCH)\s+(\S+)\s+HTTP\/\d/i);
+        if (m) return m[1];
+      }
+    }
+    return null;
+  };
+
+  // 4. [增强] 综合判断是否被阻断
+  const inferBlocked = (e) => {
+    if (e?.enforcementState?.isBlocked === true) return true;
+    if (e?.isRequestBlocked === true) return true;
+    // 检查是否有任何子违规触发了阻断
+    if (Array.isArray(e?.violations)) {
+      return e.violations.some(v => v?.enforcementState?.isBlocked === true);
+    }
+    return false;
+  };
+
+  // 5. [增强] 拆分逻辑: Time AND (A OR B) -> [Time AND A, Time AND B]
+  const trySplitOrFilter = (filter) => {
+    if (!filter) return null;
+
+    // 提取 time 条件 (e.g. time ge '2026-01-21...')
+    const timeMatch = filter.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
+    const timePart = timeMatch ? timeMatch[0] : "";
+
+    // 提取括号里的内容 ( ... )
+    const parenMatch = filter.match(/\(([^()]+)\)/);
+    if (!parenMatch) return null;
+
+    const inside = parenMatch[1];
+    // 必须包含 OR 才有拆分的意义
+    if (!/\s+or\s+/i.test(inside)) return null;
+
+    // 拆分 OR 条件
+    const parts = inside.split(/\s+or\s+/i).map(s => s.trim()).filter(Boolean);
+    if (parts.length < 2) return null;
+
+    // 重新组合成多个独立的查询 filter
+    const subFilters = parts.map(p => {
+      if (timePart) return `${timePart} and ${p}`;
+      return p;
+    });
+
+    return subFilters;
+  };
 
   try {
-    const data = await f5RequestAsm('GET', `/events/requests${query}`, null, opts);
-    
-    if (!data || !data.items || data.items.length === 0) {
-      return { 
-        content: [{ type: 'text', text: "No ASM event logs found matching the criteria." }] 
-      };
+    let data;
+    let warningMsg = "";
+
+    try {
+      // 尝试 1: 直接查询
+      data = await doQuery(filter_string);
+    } catch (err) {
+      // 捕获 "Compound expressions" 错误 (API 不支持跨字段 OR)
+      if (err.message && err.message.includes('Compound expressions')) {
+        
+        // 尝试拆分查询
+        const subFilters = trySplitOrFilter(filter_string);
+
+        if (subFilters && subFilters.length >= 2) {
+          warningMsg = `\n⚠️ NOTE: Logic split into ${subFilters.length} parallel queries to bypass API limitations.`;
+          
+          // 并行执行所有子查询
+          const results = await Promise.all(subFilters.map(f => doQuery(f).catch(e => ({ items: [] }))));
+
+          // 合并结果 + 去重 (按 id)
+          const merged = [];
+          const seen = new Set();
+          for (const r of results) {
+            for (const it of (r?.items || [])) {
+              const id = it?.id || it?.supportId;
+              if (!id) continue;
+              if (seen.has(id)) continue;
+              seen.add(id);
+              merged.push(it);
+            }
+          }
+          // 重新封装成 F5 列表结构
+          data = { items: merged };
+        } else {
+          // 无法拆分，降级为只查时间
+          // [修复] 这里重新提取 timeMatch，因为之前是在 trySplitOrFilter 内部提取的
+          let fallbackFilter = "";
+          const timeMatch = filter_string.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
+          if (filter_string && timeMatch) fallbackFilter = timeMatch[0];
+          
+          warningMsg = `\n⚠️ WARNING: Complex filter rejected. Fell back to simpler query: "${fallbackFilter || 'ALL'}".`;
+          data = await doQuery(fallbackFilter);
+        }
+      } else {
+        throw err; // 其他错误直接抛出
+      }
     }
 
-    // ============================================================
-    console.log("[DEBUG] F5 Raw Event Structure (First Item)");
-    console.log(JSON.stringify(data.items[0], null, 2));
-    console.log(" [DEBUG] End of Raw Event \n");
-    // ============================================================
+    if (!data || !data.items || data.items.length === 0) {
+      return { content: [{ type: 'text', text: `No ASM event logs found.${warningMsg}` }] };
+    }
+
+    // 仅调试时打印第一条，验证字段
+    // console.log("[DEBUG] F5 Raw Event Structure:", JSON.stringify(data.items[0], null, 2));
 
     const events = data.items.map(e => {
-        // Violations 解析
-        let violationStr = "None (Clean Traffic)";
-        if (e.violations && e.violations.length > 0) {
-            violationStr = e.violations.map(v => {
-                if (v.violationReference && v.violationReference.name) return v.violationReference.name;
-                if (v.violationName) return v.violationName;
-                return 'Unknown Violation';
-            }).join(", ");
-        }
+      // 提取 Violation Names
+      let violationStr = "None (Clean Traffic)";
+      if (e.violations && e.violations.length > 0) {
+        violationStr = e.violations.map(v => {
+          if (v.violationReference && v.violationReference.name) return v.violationReference.name;
+          if (v.violationName) return v.violationName;
+          return 'Unknown Violation';
+        }).join(", ");
+      }
 
-        // Risk 提取
-        let riskVal = '0';
-        if (e.enforcementState && e.enforcementState.rating !== undefined) {
-            riskVal = e.enforcementState.rating.toString();
-        } else if (e.violationRating !== undefined && e.violationRating !== null) {
-            riskVal = e.violationRating.toString();
-        }
+      // 提取 Risk
+      let riskVal = '0';
+      if (e.enforcementState && e.enforcementState.rating !== undefined) {
+          riskVal = e.enforcementState.rating.toString();
+      } else if (e.violationRating !== undefined && e.violationRating !== null) {
+          riskVal = e.violationRating.toString();
+      }
 
-        // Time 提取
-        const eventTime = e.requestDatetime || e.time || 'N/A';
+      // 智能提取各个字段
+      const eventTime = e.requestDatetime || e.time || 'N/A';
+      const uri = inferUri(e);       // 使用你的增强版 URI 提取
+      const blocked = inferBlocked(e); // 使用你的增强版 Blocked 判断
 
-        // Blocked 提取
-        const isBlocked = (e.enforcementState && e.enforcementState.isBlocked !== undefined) 
-                          ? e.enforcementState.isBlocked 
-                          : (e.isRequestBlocked || false);
-
-        return {
-            "Time": eventTime,
-            "Client IP": e.clientIp || 'N/A',
-            "Location": e.geoIp || 'Internal/Unknown',
-            "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'),
-            "Status": e.responseCode || 'N/A',
-            "Blocked": isBlocked,
-            // [关键修复] Support ID 其实就是 id
-            "Support ID": e.supportId || e.id || 'None',
-            "Risk": riskVal,
-            "Violations": violationStr
-        };
+      return {
+        "Time": eventTime,
+        "Client IP": e.clientIp || 'N/A',
+        "Location": e.geoIp || 'Internal/Unknown',
+        // URI 为空时回退到 Method，更友好
+        "URI": uri ? `${e.method || ''} ${uri}`.trim() : (e.method || 'Unknown'),
+        "Status": e.responseCode || 'N/A',
+        "Blocked": blocked,
+        "Support ID": e.supportId || e.id || 'None',
+        "Risk": riskVal,
+        "Violations": violationStr
+      };
     });
 
     return {
       content: [{
         type: 'text',
-        text: `Found ${events.length} recent AWAF events:\n${JSON.stringify(events, null, 2)}`
+        text: `Found ${events.length} recent AWAF events.${warningMsg}\n${JSON.stringify(events, null, 2)}`
       }]
     };
 
@@ -956,7 +1059,6 @@ async function runGetAwafEvents(opts) {
     return { isError: true, content: [{ type: 'text', text: `Failed to retrieve events: ${err.message}` }] };
   }
 }
-
 // ==========================================
 // AWAF 工具 4: Get Single Event Detail (查看攻击详情/Payload)
 // ==========================================
