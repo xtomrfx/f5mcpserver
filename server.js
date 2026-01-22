@@ -1520,8 +1520,8 @@ const tools = [
   },{
     name: 'getAwafEventDetail',
     description: 'Retrieve the FULL details (including raw HTTP request payload) for a specific AWAF event ID. \n' +
-                 'PREREQUISITE: You MUST run "getAwafAttackLog" first to get the "id" (Support ID is NOT the event ID). \n' +
-                 'Use this to inspect the actual attack payload (e.g., SQL injection strings, XSS scripts) to determine if it is a false positive.',
+                 'CRITICAL: You MUST use the exact "id" or "Support ID" returned by the getAwafAttackLog tool\n' +
+                 'Do NOT invent or guess IDs. If you do not have a valid ID from a previous step, search for the event first.',
     inputSchema: {
       type: 'object',
       properties: {
