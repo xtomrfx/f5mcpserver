@@ -891,9 +891,9 @@ async function runGetAwafEvents(opts) {
 
    
     // ============================================================
-   // console.log("[DEBUG] F5 Raw Event Structure (First Item)");
-    //console.log(JSON.stringify(data.items[0], null, 2));
-    //console.log(" [DEBUG] End of Raw Event \n");
+    console.log("[DEBUG] F5 Raw Event Structure (First Item)");
+    console.log(JSON.stringify(data.items[0], null, 2));
+    console.log(" [DEBUG] End of Raw Event \n");
     // ============================================================
 
     const events = data.items.map(e => {
