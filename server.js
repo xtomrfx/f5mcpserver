@@ -860,18 +860,27 @@ async function runViewAwafPolicyConfig(opts) {
 }
 
 
-// ==========================================
-// AWAF 工具 3: Get AWAF Event Logs (v11 Debug 显影版)
+/// ==========================================
+// AWAF 工具 3: Get AWAF Event Logs (v12 字段智能映射版)
 // ==========================================
 async function runGetAwafEvents(opts) {
   const { top, filter_string } = opts;
   
   const limit = top ? top : 20;
   
+  // 1. 手动拼接 URL (确保特殊字符不被过度转义)
   let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
+  
+  // 2. Select: 显式包含 id (即 Support ID)
+  query += `&$select=id,supportId,time,requestDatetime,clientIp,geoIp,method,uri,responseCode,violationRating,isRequestBlocked,violations,enforcementState`;
 
+  // 3. Filter 处理 (核心修复)
   if (filter_string) {
-    let safeFilter = encodeURIComponent(filter_string);
+    // [关键修复] 自动纠错：F5 API 里的字段名是 'id'，而不是 'supportId'
+    // 如果过滤器里写了 supportId，我们帮它替换成 id
+    let correctedFilter = filter_string.replace(/\bsupportId\b/g, 'id');
+
+    let safeFilter = encodeURIComponent(correctedFilter);
     safeFilter = safeFilter
       .replace(/%3A/gi, ':')  // 还原冒号
       .replace(/%27/gi, "'")  // 还原单引号
@@ -889,7 +898,6 @@ async function runGetAwafEvents(opts) {
       };
     }
 
-   
     // ============================================================
     console.log("[DEBUG] F5 Raw Event Structure (First Item)");
     console.log(JSON.stringify(data.items[0], null, 2));
@@ -901,43 +909,37 @@ async function runGetAwafEvents(opts) {
         let violationStr = "None (Clean Traffic)";
         if (e.violations && e.violations.length > 0) {
             violationStr = e.violations.map(v => {
-                // 优先取引用名称，F5 结构多变，多试几个
                 if (v.violationReference && v.violationReference.name) return v.violationReference.name;
                 if (v.violationName) return v.violationName;
                 return 'Unknown Violation';
             }).join(", ");
         }
 
-        // [智能提取 Risk] - 增加更多备选路径
+        // Risk 提取
         let riskVal = '0';
         if (e.enforcementState && e.enforcementState.rating !== undefined) {
             riskVal = e.enforcementState.rating.toString();
         } else if (e.violationRating !== undefined && e.violationRating !== null) {
             riskVal = e.violationRating.toString();
-        } else if (e.rating !== undefined) { // 有些版本直接在根目录叫 rating
-            riskVal = e.rating.toString();
         }
 
-        // [智能提取 Time] - 增加更多备选路径
-        const eventTime = e.requestDatetime || e.time || e.date_time || 'N/A';
+        // Time 提取
+        const eventTime = e.requestDatetime || e.time || 'N/A';
 
-        // [智能提取 Blocked]
+        // Blocked 提取
         const isBlocked = (e.enforcementState && e.enforcementState.isBlocked !== undefined) 
                           ? e.enforcementState.isBlocked 
-                          : (e.isRequestBlocked !== undefined ? e.isRequestBlocked : false);
-
-        // [智能提取 URI]
-        // 有时候 uri 字段叫 fullPath, url, 或者 requestUrl
-        const uriVal = e.uri || e.url || e.fullPath || (e.method || 'Unknown Method');
+                          : (e.isRequestBlocked || false);
 
         return {
             "Time": eventTime,
-            "Client IP": e.clientIp || e.ip_address || 'N/A',
+            "Client IP": e.clientIp || 'N/A',
             "Location": e.geoIp || 'Internal/Unknown',
-            "URI": `${e.method || ''} ${uriVal}`.trim(),
+            "URI": e.uri ? `${e.method} ${e.uri}` : (e.method || 'Unknown Method'),
             "Status": e.responseCode || 'N/A',
             "Blocked": isBlocked,
-            "Support ID": e.supportId || 'None',
+            // [关键修复] Support ID 其实就是 id
+            "Support ID": e.supportId || e.id || 'None',
             "Risk": riskVal,
             "Violations": violationStr
         };
@@ -946,7 +948,7 @@ async function runGetAwafEvents(opts) {
     return {
       content: [{
         type: 'text',
-        text: `Found ${events.length} recent AWAF events. \nCHECK SERVER CONSOLE FOR DEBUG OUTPUT \n\n${JSON.stringify(events, null, 2)}`
+        text: `Found ${events.length} recent AWAF events:\n${JSON.stringify(events, null, 2)}`
       }]
     };
 
