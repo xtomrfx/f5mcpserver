@@ -780,7 +780,7 @@ async function runListAwafPolicies(opts) {
   try {
     // 使用 one-line 模式，输出精简，方便模型快速浏览
     // awk '{print $3}' 是为了只提取策略名(可选优化)，但保留完整 one-line 更稳妥
-    const output = await runBash(`tmsh list asm policy one-line`);
+    const output = await runBash(`tmsh list asm policy recursive one-line`);
     
     if (!output || output.trim().length === 0) {
       return { content: [{ type: 'text', text: "No ASM policies found." }] };
