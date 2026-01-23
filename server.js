@@ -173,7 +173,7 @@ async function f5RequestUtil(method, path, body, opts) {
     });
     respText = await resp.text();
   } catch (err) {
-    console.error("底层 fetch 调用出错（UTIL 路径）：", err);
+    console.error("底层 fetch 调用出错(UTIL 路径）：", err);
     throw new Error(`fetch failed: ${err.message}`);
   }
 
