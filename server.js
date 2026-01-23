@@ -209,43 +209,102 @@ function truncateOutput(text, maxChars = 200000) { // 给予 Raw 模式 20万字
 }
 
 // 2. 智能摘要 (用于 Collapsed Mode)
+// ===== 辅助函数：智能日志分析与摘要 (v3.0 时间跨度版) =====
 function generateLogSummary(logText, maxLines = 50) {
   if (!logText) return "No logs found.";
+  
   const lines = logText.split('\n').filter(l => l.trim().length > 0);
   if (lines.length <= maxLines) return logText;
 
-  const signatureMap = new Map();
+  // === 1. 定义正则与容器 ===
+  const severityRegex = /\b(emerg|alert|crit|err|error|fatal)\b/i;
+  // 1. Syslog: Jan 23 04:12:19
+  // 2. ISO: 2026-01-23T04:12:19Z
+  const timeRegex = /^([A-Z][a-z]{2}\s+\d+\s\d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
+
+  const signatureMap = new Map(); // 用于普通统计
+  const criticalStats = new Map(); // 用于高危日志的深度统计 (Count + TimeRange)
+  
   lines.forEach(line => {
-    // 尝试提取 ]: 之后的内容作为签名，忽略时间戳和PID
+    // 提取签名 (去除时间戳、主机名、进程ID)
     const match = line.match(/\]:\s*(.*)/);
     const signature = match ? match[1] : line.substring(30); 
-    const count = signatureMap.get(signature) || 0;
-    signatureMap.set(signature, count + 1);
+
+    // --- A. 全局频次统计 ---
+    signatureMap.set(signature, (signatureMap.get(signature) || 0) + 1);
+
+    // --- B. 高危日志深度分析 ---
+    if (severityRegex.test(line)) {
+      // 提取时间戳 (如果没有匹配到，就用 "Unknown Time")
+      const timeMatch = line.match(timeRegex);
+      const timestamp = timeMatch ? timeMatch[0] : "Unknown Time";
+
+      if (!criticalStats.has(signature)) {
+        // 第一次遇到这种错误：初始化
+        criticalStats.set(signature, {
+          count: 1,
+          firstTime: timestamp,
+          lastTime: timestamp,
+          fullLine: line // 保存一份样本
+        });
+      } else {
+        // 后续遇到：更新计数和结束时间
+        const stats = criticalStats.get(signature);
+        stats.count++;
+        stats.lastTime = timestamp; // 因为日志是按时间序的，更新这个永远是“最新”的
+        // fullLine 不更新，保留第一次的样本，或者你也可以选择更新为最新的
+      }
+    }
   });
 
-  const sortedStats = [...signatureMap.entries()].sort((a, b) => b[1] - a[1]);
-  
+  // === 2. 构建输出 ===
   let summaryText = "=== 📊 LOG ANALYSIS SUMMARY (Collapsed Mode) ===\n";
-  summaryText += `Total Lines: ${lines.length} (Pattern Analyzed)\n\n`;
-  summaryText += "--- Top Recurring Events ---\n";
-  sortedStats.slice(0, 10).forEach(([sig, count]) => {
-    summaryText += `[Count: ${count}] ${sig.substring(0, 120)}${sig.length > 120 ? '...' : ''}\n`;
+  summaryText += `Total Lines Scanned: ${lines.length}\n`;
+  
+  // 计算总高危数
+  let totalCriticalCount = 0;
+  criticalStats.forEach(v => totalCriticalCount += v.count);
+  summaryText += `Critical/Error Events: ${totalCriticalCount} (across ${criticalStats.size} unique types)\n\n`;
+
+  // --- C. 展示高危日志 (带时间跨度统计) ---
+  if (criticalStats.size > 0) {
+    summaryText += "--- 🚨 CRITICAL / ERROR SUMMARY (Time Range Analysis) ---\n";
+    
+    criticalStats.forEach((stats, sig) => {
+      // 格式化输出：[次数] [开始时间 -> 结束时间] 错误内容
+      if (stats.count > 1) {
+        // 如果是“洪水” (出现超过1次)
+        summaryText += `[Count: ${stats.count}] 🔴 Flood Detected\n`;
+        summaryText += `    ├── Duration: ${stats.firstTime} --> ${stats.lastTime}\n`;
+        summaryText += `    └── Sample:   ${stats.fullLine.substring(0, 150)}${stats.fullLine.length > 150 ? '...' : ''}\n`;
+      } else {
+        // 如果只出现一次
+        summaryText += `[Count: 1] 🔴 At ${stats.firstTime}: ${stats.fullLine.substring(0, 150)}\n`;
+      }
+      summaryText += "\n";
+    });
+  }
+
+  // --- D. 展示普通频次统计 (降噪) ---
+  // 这里可以过滤掉已经在 Critical 里展示过的，避免重复，或者保留作为整体概览
+  const sortedStats = [...signatureMap.entries()].sort((a, b) => b[1] - a[1]);
+  summaryText += "--- 📉 Overall Log Patterns (Top 5 Non-Critical Noise) ---\n";
+  let shownNoise = 0;
+  sortedStats.forEach(([sig, count]) => {
+    // 简单策略：如果这个签名在 criticalStats 里有，就不在 Noise 里显示了
+    if (!criticalStats.has(sig) && shownNoise < 5) {
+        summaryText += `[Count: ${count}] ${sig.substring(0, 100)}...\n`;
+        shownNoise++;
+    }
   });
 
+  // --- E. 展示最新日志 (现场还原) ---
   const tailLines = lines.slice(-maxLines);
-  summaryText += `\n--- Latest ${maxLines} Raw Logs (For Context) ---\n`;
+  summaryText += `\n--- ⏱️ Latest ${maxLines} Raw Logs (Immediate Context) ---\n`;
   summaryText += tailLines.join('\n');
 
   return summaryText;
 }
-
-
-
-
-
-
-
-
 
 
 // ===== ASM 模块专用请求函数 =====
@@ -386,6 +445,20 @@ async function runGetLtmLogs(opts) {
   const logs = await f5RequestSys('GET', path, null, opts);
   let rawText = cleanF5LogResponse(logs);
   
+  // === 【新增】拦截 F5 的 "Maximum line count exceeded" 错误 ===
+  if (rawText.includes("Maximum line count") && rawText.includes("exceeded")) {
+    return {
+      content: [{
+        type: 'text',
+        // 明确指示 LLM 缩小范围
+        text: `F5 API LIMIT EXCEEDED:\n` +
+              `The requested time range (${start_time} -- ${end_time}) contains more than 10,000 log entries.\n` +
+              `F5 refused to return the data.\n\n` +
+              `SUGGESTION: Please call this tool again with a shorter time range to locate the specific issue.`
+      }]
+    };
+  }
+
   let finalText = "";
   if (shouldCollapse) {
     // 模式 A: 智能折叠
@@ -1263,7 +1336,7 @@ const tools = [
         end_time:     { type: 'string' },
         collapse_logs: { 
           type: 'boolean', 
-          description: 'If true (default), returns a statistical summary + latest 50 lines. If false, returns raw logs (truncated at 150k chars).' 
+          description: 'If true (default), returns a statistical summary + critical log summary + latest 50 lines. If false, returns raw logs (truncated at 150k chars).' 
         }
       },
       required: ['f5_url','f5_username','f5_password','start_time','end_time']
