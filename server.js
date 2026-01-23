@@ -197,6 +197,57 @@ async function f5RequestUtil(method, path, body, opts) {
   }
 }
 
+// ===== 辅助函数：智能日志去重 =====
+function deduplicateF5Logs(logText) {
+  if (!logText) return "";
+  
+  const lines = logText.split('\n');
+  const result = [];
+  
+  let lastSignature = null; // 用于比较的签名（去掉了时间戳的内容）
+  let lastFullLine = null;  // 最后一条完整的原始日志
+  let repeatCount = 0;      // 重复计数器
+
+  for (const line of lines) {
+    if (!line.trim()) continue; // 跳过空行
+
+    // F5/Syslog 通常前 15-20 个字符是时间戳，例如 "Jan 23 12:14:06 "
+    // 策略：我们取第 16 个字符之后的内容作为“签名”进行比较
+    // 如果日志格式不同，可以调整这个 substring 的索引
+    const currentSignature = line.length > 16 ? line.substring(16) : line;
+
+    if (currentSignature === lastSignature) {
+      // 发现重复，计数器 +1
+      repeatCount++;
+    } else {
+      // === 遇到新日志，先结算上一条 ===
+      if (lastFullLine) {
+        result.push(lastFullLine);
+        if (repeatCount > 0) {
+          // 插入类似 Cisco 的聚合提示
+          result.push(`    ... (Previous message repeated ${repeatCount} more times) ...`);
+        }
+      }
+
+      // === 重置状态 ===
+      lastSignature = currentSignature;
+      lastFullLine = line;
+      repeatCount = 0;
+    }
+  }
+
+  // === 循环结束，结算最后一条 ===
+  if (lastFullLine) {
+    result.push(lastFullLine);
+    if (repeatCount > 0) {
+      result.push(`    ... (Previous message repeated ${repeatCount} more times) ...`);
+    }
+  }
+
+  return result.join('\n');
+}
+
+
 
 // ===== ASM 模块专用请求函数 =====
 async function f5RequestAsm(method, path, body, opts) {
@@ -325,20 +376,29 @@ async function runGetPoolMemberStatus(opts) {
 
 async function runGetLtmLogs(opts) {
   const { start_time, end_time } = opts;
-  if (!start_time || !end_time) {
-    throw new Error('Missing start_time or end_time');
-  }
+  // ... 前置检查 ...
+  
   const range = `${start_time}--${end_time}`;
   const path = `/log/ltm/stats?options=range,${encodeURIComponent(range)}`;
   const logs = await f5RequestSys('GET', path, null, opts);
 
-// 1. 清洗数据
+  // 1. 基础清洗 (移除 JSON 包装)
   let cleanText = cleanF5LogResponse(logs);
+
+  // 2. 【新增】智能去重聚合
+  // 这会把 100 行重复的报错合并成 2 行，大幅节省空间
+  cleanText = deduplicateF5Logs(cleanText);
+
+  // 3. 长度截断保护 (依然需要，防止去重后还是太长)
+  // 建议配合我上一条回复的 truncateOutput 函数使用
+  if (cleanText.length > 30000) {
+      cleanText = `... (Old logs truncated) ...\n` + cleanText.slice(-30000);
+  }
 
   return {
     content: [{
       type: 'text',
-      text: `LTM Logs from ${start_time} to ${end_time}:\n${cleanText}`
+      text: `LTM Logs from ${start_time} to ${end_time} (Deduplicated):\n${cleanText}`
     }]
   };
 }
@@ -592,8 +652,8 @@ async function runViewConfig(opts) {
 
     const optimizedConfig = cleanF5ConfigResponse(output);
   
-   //=== 新增：长度截断保护 (Config 依然可能很大，设个 300k 字符的安全线) ===
-    const MAX_CONFIG_CHARS = 300000;
+   //=== 新增：长度截断保护  ===
+    const MAX_CONFIG_CHARS = 150000;  // around 40k tokens
     let finalOutput = optimizedConfig;
     if (finalOutput.length > MAX_CONFIG_CHARS) {
         finalOutput = finalOutput.substring(0, MAX_CONFIG_CHARS) + "\n... (Configuration truncated due to length) ...";
@@ -825,8 +885,6 @@ async function runViewAwafPolicyConfig(opts) {
     console.log(`[View Config] Exporting ${policy_name} to ${tempFilePath} (min-xml-file)...`);
 
     // 2. 核心逻辑：Save (Compact) -> Read -> Delete
-    // 使用 min-xml-file 参数获取极简配置（只包含修改项）
-    // 使用 && 连接命令，确保顺序执行，原子性操作
     const commandChain = `tmsh save asm policy ${policy_name} min-xml-file ${tempFilePath} && cat ${tempFilePath} && rm -f ${tempFilePath}`;
     
     let xmlContent = await runBash(commandChain);
@@ -840,8 +898,8 @@ async function runViewAwafPolicyConfig(opts) {
       };
     }
 
-    // 3. 截断保护 (虽然 min-xml 很小，但为了防止超大策略，还是加个保险)
-    const MAX_CHARS = 500000;
+    // 3. 截断保护
+    const MAX_CHARS = 150000;
     if (xmlContent.length > MAX_CHARS) {
       xmlContent = xmlContent.substring(0, MAX_CHARS) + `\n\n... [Truncated due to size limit] ...`;
     }
