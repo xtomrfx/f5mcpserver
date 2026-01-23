@@ -1004,31 +1004,20 @@ function cleanF5ConfigResponse(configText) {
   if (!configText) return "";
   let cleaned = configText;
 
-  // 1. 【安全移除】使用计数器移除复杂嵌套块 (彻底解决结构断裂问题)
-  // 这些是你在输出中看到的大段无用信息
+  // 无用信息remove
   cleaned = removeBlock(cleaned, "sys diags ihealth-request");
   cleaned = removeBlock(cleaned, "sys snmp"); 
   cleaned = removeBlock(cleaned, "sys software volume");
   cleaned = removeBlock(cleaned, "sys disk logical-disk");
   cleaned = removeBlock(cleaned, "sys software update");
-  cleaned = removeBlock(cleaned, "sys management-dhcp"); // 你输出里不需要这个
-  cleaned = removeBlock(cleaned, "sys ecm cloud-provider"); // 云环境模板，通常不需要
+  cleaned = removeBlock(cleaned, "sys management-dhcp");
+  cleaned = removeBlock(cleaned, "sys ecm cloud-provider");
   cleaned = removeBlock(cleaned, "sys management-ovsdb"); 
+  cleaned = removeBlock(cleaned, "sys sflow"); 
+  cleaned = removeBlock(cleaned, "sys fpga"); 
 
-  // 2. 【增强版】移除空配置块 (Iterative Regex)
-  // 匹配 "sys core { }" 这种里面什么都没有，或者只有空格的块
-  // 运行 5 次以处理多层空嵌套 (比如 A { B { } } -> A { } -> 空)
-  const emptyBlockRegex = /^\s*[^\s{]+\s*[^\s{]*\s*\{\s*\}\n?/gm;
-  for(let i=0; i<5; i++) {
-      cleaned = cleaned.replace(emptyBlockRegex, '');
-  }
-
-  // 3. 【降噪】移除具体的证书指纹/校验和 (保持单行正则)
   cleaned = cleaned.replace(/^\s*(checksum|fingerprint|signature|modulus|public-key|enc-key|passphrase)\s+.*$/gm, '');
-
-  // 4. 【压缩】压缩连续空行，让 Token 更紧凑
   cleaned = cleaned.replace(/\n\s*\n/g, '\n');
-
   return cleaned.trim();
 }
 
