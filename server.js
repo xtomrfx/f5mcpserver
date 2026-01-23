@@ -209,98 +209,135 @@ function truncateOutput(text, maxChars = 200000) { // 给予 Raw 模式 20万字
 }
 
 // 2. 智能摘要 (用于 Collapsed Mode)
-// ===== 辅助函数：智能日志分析与摘要 (v3.0 时间跨度版) =====
 function generateLogSummary(logText, maxLines = 50) {
   if (!logText) return "No logs found.";
   
-  const lines = logText.split('\n').filter(l => l.trim().length > 0);
-  if (lines.length <= maxLines) return logText;
-
-  // === 1. 定义正则与容器 ===
-  const severityRegex = /\b(emerg|alert|crit|err|error|fatal)\b/i;
-  // 1. Syslog: Jan 23 04:12:19
-  // 2. ISO: 2026-01-23T04:12:19Z
-  const timeRegex = /^([A-Z][a-z]{2}\s+\d+\s\d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/;
-
-  const signatureMap = new Map(); // 用于普通统计
-  const criticalStats = new Map(); // 用于高危日志的深度统计 (Count + TimeRange)
+  // 1. 预处理：清洗前缀 (ltm, tmm, sys, audit 等)
+  // 这一步非常关键，否则无法正确识别级别和时间
+  const lines = logText.split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0)
+    .map(l => l.replace(/^(ltm|audit|sys|tmm|notice|warning|err|debug|info|emerg|alert|crit)\s+/, '')); 
   
-  lines.forEach(line => {
-    // 提取签名 (去除时间戳、主机名、进程ID)
-    const match = line.match(/\]:\s*(.*)/);
-    const signature = match ? match[1] : line.substring(30); 
+  // 修正后的清洗逻辑：只去 facility
+  const cleanLines = logText.split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0)
+    .map(l => l.replace(/^(ltm|audit|sys)\s+/, ''));
 
-    // --- A. 全局频次统计 ---
+  if (cleanLines.length <= maxLines) return cleanLines.join('\n');
+
+  // === 1. 定义正则 ===
+  const levelRegex = /\b(emerg|alert|crit|error|err|warning|warn|notice|info|debug)\b/i;
+  const criticalRegex = /\b(emerg|alert|crit|error|err|fatal)\b/i; // 只有这些进高危区
+  const timeRegex = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?|[A-Z][a-z]{2}\s+\d+\s\d{2}:\d{2}:\d{2})/;
+
+  // === 2. 统计容器 ===
+  const levelStats = { debug: 0, info: 0, notice: 0, warning: 0, error: 0, critical: 0, other: 0 };
+  const signatureMap = new Map();
+  const criticalStats = new Map();
+  
+  cleanLines.forEach(line => {
+    // --- A. 级别统计 (Dashboard) ---
+    const lvlMatch = line.match(levelRegex);
+    let level = 'other';
+    if (lvlMatch) {
+      const l = lvlMatch[0].toLowerCase();
+      if (['emerg', 'alert', 'crit', 'fatal'].includes(l)) level = 'critical';
+      else if (['error', 'err'].includes(l)) level = 'error';
+      else if (['warning', 'warn'].includes(l)) level = 'warning';
+      else if (['notice', 'info'].includes(l)) level = 'info'; // 合并 notice 和 info
+      else if (l === 'debug') level = 'debug';
+    }
+    levelStats[level]++;
+
+    // --- B. 签名提取 ---
+    // 提取 ]: 之后的内容，或者如果找不到，尝试提取 level 之后的内容
+    let signature = line;
+    const bracketMatch = line.match(/\]:\s*(.*)/);
+    if (bracketMatch) {
+      signature = bracketMatch[1];
+    } else {
+      // 兜底：去掉时间戳和主机名，大概取第40个字符后的内容
+      signature = line.substring(40);
+    }
+
     signatureMap.set(signature, (signatureMap.get(signature) || 0) + 1);
 
-    // --- B. 高危日志深度分析 ---
-    if (severityRegex.test(line)) {
-      // 提取时间戳 (如果没有匹配到，就用 "Unknown Time")
+    // --- C. 高危详情提取 (维持原逻辑) ---
+    if (criticalRegex.test(line)) {
       const timeMatch = line.match(timeRegex);
       const timestamp = timeMatch ? timeMatch[0] : "Unknown Time";
 
       if (!criticalStats.has(signature)) {
-        // 第一次遇到这种错误：初始化
         criticalStats.set(signature, {
           count: 1,
           firstTime: timestamp,
           lastTime: timestamp,
-          fullLine: line // 保存一份样本
+          fullLine: line
         });
       } else {
-        // 后续遇到：更新计数和结束时间
         const stats = criticalStats.get(signature);
         stats.count++;
-        stats.lastTime = timestamp; // 因为日志是按时间序的，更新这个永远是“最新”的
-        // fullLine 不更新，保留第一次的样本，或者你也可以选择更新为最新的
+        stats.lastTime = timestamp; 
       }
     }
   });
 
-  // === 2. 构建输出 ===
-  let summaryText = "=== 📊 LOG ANALYSIS SUMMARY (Collapsed Mode) ===\n";
-  summaryText += `Total Lines Scanned: ${lines.length}\n`;
+  // === 3. 构建输出 ===
+  let summaryText = "=== 📊 LOG ANALYSIS DASHBOARD ===\n";
+  summaryText += `Total Lines: ${cleanLines.length}\n`;
   
-  // 计算总高危数
-  let totalCriticalCount = 0;
-  criticalStats.forEach(v => totalCriticalCount += v.count);
-  summaryText += `Critical/Error Events: ${totalCriticalCount} (across ${criticalStats.size} unique types)\n\n`;
+  // [新增] 级别分布条
+  const total = cleanLines.length;
+  const pct = (num) => ((num / total) * 100).toFixed(1) + '%';
+  
+  summaryText += `Severity Distribution:\n`;
+  if (levelStats.critical > 0) summaryText += `CRITICAL: ${levelStats.critical} (${pct(levelStats.critical)})\n`;
+  if (levelStats.error > 0)    summaryText += `ERROR:    ${levelStats.error} (${pct(levelStats.error)})\n`;
+  if (levelStats.warning > 0)  summaryText += `WARNING:  ${levelStats.warning} (${pct(levelStats.warning)})\n`;
+  if (levelStats.debug > 0)    summaryText += `DEBUG:    ${levelStats.debug} (${pct(levelStats.debug)}) - High Noise\n`;
+  summaryText += `\n`;
 
-  // --- C. 展示高危日志 (带时间跨度统计) ---
+  // 高危详情 (维持原样)
+  let totalCritEvents = 0;
+  criticalStats.forEach(v => totalCritEvents += v.count);
+  
   if (criticalStats.size > 0) {
-    summaryText += "--- 🚨 CRITICAL / ERROR SUMMARY (Time Range Analysis) ---\n";
-    
+    summaryText += `--- 🚨 CRITICAL / ERROR DETAILS (${criticalStats.size} types) ---\n`;
     criticalStats.forEach((stats, sig) => {
-      // 格式化输出：[次数] [开始时间 -> 结束时间] 错误内容
       if (stats.count > 1) {
-        // 如果是“洪水” (出现超过1次)
-        summaryText += `[Count: ${stats.count}] 🔴 Flood Detected\n`;
-        summaryText += `    ├── Duration: ${stats.firstTime} --> ${stats.lastTime}\n`;
-        summaryText += `    └── Sample:   ${stats.fullLine.substring(0, 150)}${stats.fullLine.length > 150 ? '...' : ''}\n`;
+        summaryText += `[Count: ${stats.count}] Flood (${stats.firstTime} -> ${stats.lastTime})\n`;
+        summaryText += `    Msg: ${stats.fullLine.substring(0, 120)}...\n`;
       } else {
-        // 如果只出现一次
-        summaryText += `[Count: 1] 🔴 At ${stats.firstTime}: ${stats.fullLine.substring(0, 150)}\n`;
+        summaryText += `[Count: 1] At ${stats.firstTime}: ${stats.fullLine.substring(0, 120)}\n`;
       }
       summaryText += "\n";
     });
   }
 
-  // --- D. 展示普通频次统计 (降噪) ---
-  // 这里可以过滤掉已经在 Critical 里展示过的，避免重复，或者保留作为整体概览
+  // 普通统计 (排除 Debug 以节省空间，或者只显示 Top 3 Debug)
   const sortedStats = [...signatureMap.entries()].sort((a, b) => b[1] - a[1]);
-  summaryText += "--- 📉 Overall Log Patterns (Top 5 Non-Critical Noise) ---\n";
-  let shownNoise = 0;
-  sortedStats.forEach(([sig, count]) => {
-    // 简单策略：如果这个签名在 criticalStats 里有，就不在 Noise 里显示了
-    if (!criticalStats.has(sig) && shownNoise < 5) {
-        summaryText += `[Count: ${count}] ${sig.substring(0, 100)}...\n`;
-        shownNoise++;
-    }
-  });
+  summaryText += "--- 📉 Top Log Patterns (Noise Analysis) ---\n";
+  
+  let shownCount = 0;
+  for (const [sig, count] of sortedStats) {
+    if (shownCount >= 8) break; // 最多显示8条
+    
+    // 如果已经在 Critical 里显示过，跳过
+    if (criticalStats.has(sig)) continue;
+    
+    // 标记是否为 Debug
+    const isDebug = sig.toLowerCase().includes('debug');
+    const prefix = isDebug ? "[DEBUG]" : "[INFO/WARN]";
+    
+    summaryText += `[Count: ${count}] ${prefix} ${sig.substring(0, 80)}...\n`;
+    shownCount++;
+  }
 
-  // --- E. 展示最新日志 (现场还原) ---
-  const tailLines = lines.slice(-maxLines);
-  summaryText += `\n--- ⏱️ Latest ${maxLines} Raw Logs (Immediate Context) ---\n`;
+  // 现场还原
+  const tailLines = cleanLines.slice(-maxLines);
+  summaryText += `\n--- ⏱️ Latest ${maxLines} Raw Logs ---\n`;
   summaryText += tailLines.join('\n');
 
   return summaryText;
