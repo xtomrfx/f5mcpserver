@@ -197,55 +197,54 @@ async function f5RequestUtil(method, path, body, opts) {
   }
 }
 
-// ===== 辅助函数：智能日志去重 =====
-function deduplicateF5Logs(logText) {
-  if (!logText) return "";
-  
-  const lines = logText.split('\n');
-  const result = [];
-  
-  let lastSignature = null; // 用于比较的签名（去掉了时间戳的内容）
-  let lastFullLine = null;  // 最后一条完整的原始日志
-  let repeatCount = 0;      // 重复计数器
 
-  for (const line of lines) {
-    if (!line.trim()) continue; // 跳过空行
+// ===== Util 模块：日志处理工具 =====
 
-    // F5/Syslog 通常前 15-20 个字符是时间戳，例如 "Jan 23 12:14:06 "
-    // 策略：我们取第 16 个字符之后的内容作为“签名”进行比较
-    // 如果日志格式不同，可以调整这个 substring 的索引
-    const currentSignature = line.length > 16 ? line.substring(16) : line;
-
-    if (currentSignature === lastSignature) {
-      // 发现重复，计数器 +1
-      repeatCount++;
-    } else {
-      // === 遇到新日志，先结算上一条 ===
-      if (lastFullLine) {
-        result.push(lastFullLine);
-        if (repeatCount > 0) {
-          // 插入类似 Cisco 的聚合提示
-          result.push(`    ... (Previous message repeated ${repeatCount} more times) ...`);
-        }
-      }
-
-      // === 重置状态 ===
-      lastSignature = currentSignature;
-      lastFullLine = line;
-      repeatCount = 0;
-    }
-  }
-
-  // === 循环结束，结算最后一条 ===
-  if (lastFullLine) {
-    result.push(lastFullLine);
-    if (repeatCount > 0) {
-      result.push(`    ... (Previous message repeated ${repeatCount} more times) ...`);
-    }
-  }
-
-  return result.join('\n');
+// 1. 基础截断保护 (用于 Raw Mode)
+function truncateOutput(text, maxChars = 200000) { // 给予 Raw 模式 20万字符的宽限
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  const cutCount = text.length - maxChars;
+  return `... (Raw logs truncated due to size limit, removed first ${cutCount} chars) ...\n` + text.slice(-maxChars);
 }
+
+// 2. 智能摘要 (用于 Collapsed Mode)
+function generateLogSummary(logText, maxLines = 50) {
+  if (!logText) return "No logs found.";
+  const lines = logText.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length <= maxLines) return logText;
+
+  const signatureMap = new Map();
+  lines.forEach(line => {
+    // 尝试提取 ]: 之后的内容作为签名，忽略时间戳和PID
+    const match = line.match(/\]:\s*(.*)/);
+    const signature = match ? match[1] : line.substring(30); 
+    const count = signatureMap.get(signature) || 0;
+    signatureMap.set(signature, count + 1);
+  });
+
+  const sortedStats = [...signatureMap.entries()].sort((a, b) => b[1] - a[1]);
+  
+  let summaryText = "=== 📊 LOG ANALYSIS SUMMARY (Collapsed Mode) ===\n";
+  summaryText += `Total Lines: ${lines.length} (Pattern Analyzed)\n\n`;
+  summaryText += "--- Top Recurring Events ---\n";
+  sortedStats.slice(0, 10).forEach(([sig, count]) => {
+    summaryText += `[Count: ${count}] ${sig.substring(0, 120)}${sig.length > 120 ? '...' : ''}\n`;
+  });
+
+  const tailLines = lines.slice(-maxLines);
+  summaryText += `\n--- Latest ${maxLines} Raw Logs (For Context) ---\n`;
+  summaryText += tailLines.join('\n');
+
+  return summaryText;
+}
+
+
+
+
+
+
+
 
 
 
@@ -374,34 +373,36 @@ async function runGetPoolMemberStatus(opts) {
   return { content: [{ type: 'text', text: `OK Pool '${pool_name}' members: ${JSON.stringify(rows)}` }] };
 }
 
+
 async function runGetLtmLogs(opts) {
-  const { start_time, end_time } = opts;
-  // ... 前置检查 ...
-  
+  const { start_time, end_time, collapse_logs } = opts; // 获取开关
+  // 默认为 true (折叠)，除非用户显式设置为 false
+  const shouldCollapse = collapse_logs !== false; 
+
+  if (!start_time || !end_time) throw new Error('Missing start_time or end_time');
   const range = `${start_time}--${end_time}`;
   const path = `/log/ltm/stats?options=range,${encodeURIComponent(range)}`;
+  
   const logs = await f5RequestSys('GET', path, null, opts);
-
-  // 1. 基础清洗 (移除 JSON 包装)
-  let cleanText = cleanF5LogResponse(logs);
-
-  // 2. 【新增】智能去重聚合
-  // 这会把 100 行重复的报错合并成 2 行，大幅节省空间
-  cleanText = deduplicateF5Logs(cleanText);
-
-  // 3. 长度截断保护 (依然需要，防止去重后还是太长)
-  // 建议配合我上一条回复的 truncateOutput 函数使用
-  if (cleanText.length > 30000) {
-      cleanText = `... (Old logs truncated) ...\n` + cleanText.slice(-30000);
+  let rawText = cleanF5LogResponse(logs);
+  
+  let finalText = "";
+  if (shouldCollapse) {
+    // 模式 A: 智能折叠
+    finalText = generateLogSummary(rawText, 50);
+  } else {
+    // 模式 B: 原始日志 (带大容量截断)
+    finalText = truncateOutput(rawText, 150000); // 允许约 40k Tokens
   }
 
   return {
     content: [{
       type: 'text',
-      text: `LTM Logs from ${start_time} to ${end_time} (Deduplicated):\n${cleanText}`
+      text: `LTM Logs (${start_time} -- ${end_time}) [Mode: ${shouldCollapse ? 'Collapsed' : 'Raw'}]:\n${finalText}`
     }]
   };
 }
+
 
 async function runGetAuditLogs(opts) {
   const { start_time, end_time } = opts;
@@ -996,7 +997,7 @@ async function runGetAwafEvents(opts) {
       if (err.message && err.message.includes('Compound expressions')) {
         const subFilters = trySplitOrFilter(filter_string);
         if (subFilters && subFilters.length >= 2) {
-          warningMsg = `\n⚠️ NOTE: Logic split into ${subFilters.length} parallel queries.`;
+          warningMsg = `\nNOTE: Logic split into ${subFilters.length} parallel queries.`;
           const results = await Promise.all(subFilters.map(f => doQuery(f).catch(e => ({ items: [] }))));
           const merged = [];
           const seen = new Set();
@@ -1015,7 +1016,7 @@ async function runGetAwafEvents(opts) {
           let fallbackFilter = "";
           const timeMatchFallback = filter_string.match(/time\s+(?:ge|le|gt|lt|eq)\s+(?:'[^']+'|"[^"]+"|\S+)/i);
           if (timeMatchFallback) fallbackFilter = timeMatchFallback[0];
-          warningMsg = `\n⚠️ WARNING: Complex filter rejected. Fell back to simpler query.`;
+          warningMsg = `\nWARNING: Complex filter rejected. Fell back to simpler query.`;
           data = await doQuery(fallbackFilter);
         }
       } else {
@@ -1251,18 +1252,21 @@ const tools = [
   },
   {
     name: 'getLtmLogs',
-    description: 'Retrieve LTM logs within a specified time range',
+    description: 'Retrieve LTM logs within a specified time . Use collapse_logs=true (default) for summary to save tokens, or false for full raw logs during deep debugging.',
     inputSchema: {
       type: 'object',
       properties: {
-        f5_url:       { type: 'string', description: 'F5 management URL, e.g. https://host' },
-        f5_username:  { type: 'string', description: 'F5 username' },
-        f5_password:  { type: 'string', description: 'F5 password' },
-        start_time:   { type: 'string', description: 'ISO timestamp for range start, e.g. 2025-05-30T00:00:00Z' },
-        end_time:     { type: 'string', description: 'ISO timestamp for range end, e.g. 2025-05-30T15:00:00Z' }
+        f5_url:       { type: 'string' },
+        f5_username:  { type: 'string' },
+        f5_password:  { type: 'string' },
+        start_time:   { type: 'string' },
+        end_time:     { type: 'string' },
+        collapse_logs: { 
+          type: 'boolean', 
+          description: 'If true (default), returns a statistical summary + latest 50 lines. If false, returns raw logs (truncated at 150k chars).' 
+        }
       },
-      required: ['f5_url','f5_username','f5_password','start_time','end_time'],
-      additionalProperties: false
+      required: ['f5_url','f5_username','f5_password','start_time','end_time']
     },
     handler: runGetLtmLogs
   },
