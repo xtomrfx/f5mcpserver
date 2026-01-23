@@ -428,25 +428,6 @@ async function runDeletePool(opts) {
 }
 
 
- //列出所有 Pool 的信息
-async function runListAllPoolStat(opts) {
-  const { f5_url, f5_username, f5_password } = opts;
-  if (!f5_url || !f5_username || !f5_password) {
-    throw new Error('Missing f5_url, f5_username or f5_password');
-  }
-  const data = await f5Request('GET', '/pool', null, opts);
-  return {
-    content: [
-      {
-        type: 'text',
-        text: `All Pools:\n${JSON.stringify(data, null, 2)}`
-      }
-    ]
-  };
-}
-
-
-
 async function runCreateVirtualServer(opts) {
   const { virtual_name, ip, port, pool_name } = opts;
   if (!virtual_name || !ip || !port) throw new Error('Missing virtual_name, ip or port');
@@ -629,11 +610,32 @@ async function runListAllVirtual(opts) {
     content: [
       {
         type: 'text',
-        text: `All Virtual Servers:\n${JSON.stringify(data, null, 2)}`
+        text: `All Virtual Servers:\n${JSON.stringify(data)}`
       }
     ]
   };
 }
+
+
+
+async function runListAllPoolStat(opts) {
+  const { f5_url, f5_username, f5_password } = opts;
+  if (!f5_url || !f5_username || !f5_password) {
+    throw new Error('Missing f5_url, f5_username or f5_password');
+  }
+  const data = await f5Request('GET', '/pool', null, opts);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `All Pools:\n${JSON.stringify(data)}`
+      }
+    ]
+  };
+}
+
+
+
 
 async function runGetTmmInfo(opts) {
   const data = await f5RequestSys('GET', '/tmm-info', null, opts);
@@ -641,7 +643,7 @@ async function runGetTmmInfo(opts) {
     content: [
       {
         type: 'text',
-        text: `TMM Info:\n${JSON.stringify(data, null, 2)}`
+        text: `TMM Info:\n${JSON.stringify(data)}`
       }
     ]
   };
@@ -653,7 +655,7 @@ async function runGetConnection(opts) {
     content: [
       {
         type: 'text',
-        text: `Connection Info:\n${JSON.stringify(data, null, 2)}`
+        text: `Connection Info:\n${JSON.stringify(data)}`
       }
     ]
   };
@@ -665,7 +667,7 @@ async function runGetCertificateStat(opts) {
     content: [
       {
         type: 'text',
-        text: `Certification Info:\n${JSON.stringify(data, null, 2)}`
+        text: `Certification Info:\n${JSON.stringify(data)}`
       }
     ]
   };
