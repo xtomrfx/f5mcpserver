@@ -200,7 +200,7 @@ async function f5RequestUtil(method, path, body, opts) {
 
 // ===== Util 模块：日志处理工具 =====
 
-// 1. 基础截断保护 (用于 Raw Mode)
+// 基础截断保护 (用于 Raw Mode)
 function truncateOutput(text, maxChars = 200000) { // 给予 Raw 模式 20万字符的宽限
   if (!text) return "";
   if (text.length <= maxChars) return text;
@@ -208,9 +208,8 @@ function truncateOutput(text, maxChars = 200000) { // 给予 Raw 模式 20万字
   return `... (Raw logs truncated due to size limit, removed first ${cutCount} chars) ...\n` + text.slice(-maxChars);
 }
 
-// 2. 智能摘要 (用于 Collapsed Mode)
-
-// ===== 辅助函数：智能日志分析与摘要 (v4.0 终极融合版) =====
+// 智能摘要 (用于 Collapsed Mode)
+// ===== 辅助函数：智能日志分析与摘要 =====
 function generateLogSummary(logText, maxLines = 50) {
   if (!logText) return "No logs found.";
   
@@ -345,6 +344,84 @@ function generateLogSummary(logText, maxLines = 50) {
   // --- Part 4: 现场还原 (最新日志) ---
   const tailLines = cleanLines.slice(-maxLines);
   summaryText += `\n--- ⏱️ Latest ${maxLines} Raw Logs (Immediate Context) ---\n`;
+  summaryText += tailLines.join('\n');
+
+  return summaryText;
+}
+
+// ===== 辅助函数：专用于 Audit Log 的智能摘要 (支持 PID 去重) =====
+function generateAuditLogSummary(logText, maxLines = 50) {
+  if (!logText) return "No audit logs found.";
+  
+  // 1. 预处理：清洗行首 (去除 audit timestamp notice 等前缀)
+  // 目的：让内容暴露出来，同时保留时间戳以便后续分析（如果需要）
+  const cleanLines = logText.split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0)
+    .map(l => l.replace(/^(audit|info|notice|warning|err)\s+/, '')); 
+
+  if (cleanLines.length <= maxLines) return cleanLines.join('\n');
+
+  // === 统计容器 ===
+  // Audit Log 主要是 Notice 和 Info，这里重点统计 "用户行为" 和 "高频脚本"
+  const signatureMap = new Map();
+  const userActionMap = new Map(); // 专门记录 user=admin 之类的人工操作
+  
+  cleanLines.forEach(line => {
+    // --- A. 提取签名 & PID 模糊化 (核心逻辑) ---
+    // 原始: ... tmsh[15731]: AUDIT - pid=15731 user=root ...
+    // 目标: ... tmsh[15731]: AUDIT - pid={any} user=root ...
+    
+    // 1. 提取主要内容 (通常在 ]: 之后，或者直接取全文)
+    let content = line;
+    const bracketMatch = line.match(/\]:\s*(.*)/);
+    if (bracketMatch) content = bracketMatch[1];
+    else content = line.substring(30); // 兜底
+
+    // 2. 关键：将 pid=数字 替换为 pid={any}
+    let signature = content.replace(/pid=\d+/, 'pid={any}');
+    
+    // 3. 进一步：将 tmsh[数字] 替换为 tmsh[{any}] (如果需要更激进的去重)
+    // signature = signature.replace(/tmsh\[\d+\]/, 'tmsh[{any}]');
+
+    signatureMap.set(signature, (signatureMap.get(signature) || 0) + 1);
+
+    // --- B. 提取关键用户操作 (高亮 Admin) ---
+    // 如果不是 user=root (通常是自动脚本)，可能是真人操作，值得单独标记
+    if (content.includes('user=') && !content.includes('user=root')) {
+        // 提取 user=xxx
+        const userMatch = content.match(/user=([^\s]+)/);
+        const user = userMatch ? userMatch[1] : 'unknown';
+        userActionMap.set(user, (userActionMap.get(user) || 0) + 1);
+    }
+  });
+
+  // === 构建输出 ===
+  let summaryText = "=== 🛡️ AUDIT LOG ANALYSIS (Smart Collapsed) ===\n";
+  summaryText += `Total Lines Scanned: ${cleanLines.length}\n`;
+  
+  // 1. 用户活动概览
+  if (userActionMap.size > 0) {
+      summaryText += `Active Human/External Users: ${Array.from(userActionMap.keys()).join(', ')}\n`;
+  } else {
+      summaryText += `User Activity: Mostly automated scripts (root)\n`;
+  }
+  summaryText += `\n`;
+
+  // 2. Top Patterns (按频率倒序)
+  const sortedStats = [...signatureMap.entries()].sort((a, b) => b[1] - a[1]);
+  summaryText += "--- 📉 Automated Tasks & Frequent Events (PID Masked) ---\n";
+  
+  // 只显示前 15 个高频模式 (Audit Log 种类通常不多，但重复率极高)
+  sortedStats.slice(0, 15).forEach(([sig, count]) => {
+    // 截断过长文本
+    let displaySig = sig.length > 120 ? sig.substring(0, 120) + "..." : sig;
+    summaryText += `[Count: ${count}] ${displaySig}\n`;
+  });
+
+  // 3. 现场还原
+  const tailLines = cleanLines.slice(-maxLines);
+  summaryText += `\n--- ⏱️ Latest ${maxLines} Raw Logs (For Context) ---\n`;
   summaryText += tailLines.join('\n');
 
   return summaryText;
@@ -505,30 +582,41 @@ async function runGetLtmLogs(opts) {
 
 
 async function runGetAuditLogs(opts) {
-  const { start_time, end_time } = opts;
-  if (!start_time || !end_time) {
-    throw new Error('Missing start_time or end_time');
-  }
+  const { start_time, end_time, collapse_logs } = opts;
+  // 默认开启折叠，除非用户显式传入 false
+  const shouldCollapse = collapse_logs !== false;
+
+  if (!start_time || !end_time) throw new Error('Missing start_time or end_time');
   const range = `${start_time}--${end_time}`;
-  // F5 API path for audit logs: /mgmt/tm/sys/log/audit/stats
-  // f5RequestSys automatically prepends /mgmt/tm/sys
   const path = `/log/audit/stats?options=range,${encodeURIComponent(range)}`;
+  
   const logs = await f5RequestSys('GET', path, null, opts);
+  let rawText = cleanF5LogResponse(logs);
 
-  // 1. 清洗数据
-  let cleanText = cleanF5LogResponse(logs);
+  // 1. 拦截 F5 API 限制 (保留之前的安全逻辑)
+  if (rawText.includes("Maximum line count") && rawText.includes("exceeded")) {
+    return {
+      content: [{
+        type: 'text',
+        text: `F5 API LIMIT EXCEEDED:\nThe requested time range is too large (>10,000 lines).\nSUGGESTION: Please shorten the time range.`
+      }]
+    };
+  }
 
-  // 2. 长度截断保护 (例如保留最后 50,000 字符，约 15k tokens)
-  const MAX_CHARS = 60000;
-
-  if (cleanText.length > MAX_CHARS) {
-    cleanText = `... (logs truncated, showing last ${MAX_CHARS} chars) ...\n` + cleanText.slice(-MAX_CHARS);
+  // 2. 分流处理
+  let resultText = "";
+  if (shouldCollapse) {
+    // ✅ 使用专门的 Audit 优化函数
+    resultText = generateAuditLogSummary(rawText, 50);
+  } else {
+    // ✅ Raw 模式：不做任何 PID 模糊处理，只做长度截断
+    resultText = truncateOutput(rawText, 150000); 
   }
 
   return {
     content: [{
       type: 'text',
-      text: `Audit Logs from ${start_time} to ${end_time}:\n${cleanText}`
+      text: `Audit Logs (${start_time} -- ${end_time}) [Mode: ${shouldCollapse ? 'Collapsed' : 'Raw'}]:\n${resultText}`
     }]
   };
 }
@@ -1612,7 +1700,11 @@ const tools = [
         f5_username:  { type: 'string', description: 'F5 username' },
         f5_password:  { type: 'string', description: 'F5 password' },
         start_time:   { type: 'string', description: 'ISO timestamp for range start, e.g. 2025-05-30T00:00:00Z' },
-        end_time:     { type: 'string', description: 'ISO timestamp for range end, e.g. 2025-05-30T15:00:00Z' }
+        end_time:     { type: 'string', description: 'ISO timestamp for range end, e.g. 2025-05-30T15:00:00Z' },
+        collapse_logs: { 
+          type: 'boolean', 
+          description: 'If true (default), groups repetitive scripts by masking PIDs (pid=123 -> pid={any}). If false, returns full raw logs.' 
+        }
       },
       required: ['f5_url','f5_username','f5_password','start_time','end_time'],
       additionalProperties: false
