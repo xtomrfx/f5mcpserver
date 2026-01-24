@@ -828,10 +828,10 @@ async function runViewConfig(opts) {
   // 构造命令
   let cmdString = '';
   
-  if (config_scope === 'saved_file') {
+  if (config_scope === 'saved_ltm_file') {
     // 查看硬盘上保存的默认 LTM 配置文件
     cmdString = 'cat /config/bigip.conf';
-  } else if (config_scope === 'base_file') {
+  } else if (config_scope === 'saved_base_file') {
      // 查看硬盘上保存的基础网络配置文件
     cmdString = 'cat /config/bigip_base.conf';
   } else {
