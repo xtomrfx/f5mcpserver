@@ -634,7 +634,7 @@ async function runGetSystemLogs(opts) {
   return {
     content: [{
       type: 'text',
-      text: `System Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs, null, 2)}`
+      text: `System Logs from ${start_time} to ${end_time}:\n${JSON.stringify(logs)}`
     }]
   };
 }
@@ -682,7 +682,7 @@ async function runGetCpuStat(opts) {
     content: [
       {
         type: 'text',
-        text: `CPU Stats:\n${JSON.stringify(data, null, 2)}`
+        text: `CPU Stats:\n${JSON.stringify(data)}`
       }
     ]
   };
@@ -912,7 +912,7 @@ async function runGetLicenseStatus(opts) {
     content: [
       {
         type: 'text',
-        text: `License Status:\n${summary}\n\nActive Modules List:\n${JSON.stringify(activeModules, null, 2)}\n\nFull Raw Data:\n${JSON.stringify(data, null, 2)}`
+        text: `License Status:\n${summary}\n\nActive Modules List:\n${JSON.stringify(activeModules)}\n\nFull Raw Data:\n${JSON.stringify(data)}`
       }
     ]
   };
