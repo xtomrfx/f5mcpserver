@@ -1016,6 +1016,7 @@ function cleanF5ConfigResponse(configText) {
   cleaned = removeBlock(cleaned, "sys sflow"); 
   cleaned = removeBlock(cleaned, "sys fpga"); 
 
+  cleaned = cleaned.replace(/^\s+/gm, '');
   cleaned = cleaned.replace(/^\s*(checksum|fingerprint|signature|modulus|public-key|enc-key|passphrase)\s+.*$/gm, '');
   cleaned = cleaned.replace(/\n\s*\n/g, '\n');
   return cleaned.trim();
