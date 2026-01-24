@@ -919,6 +919,60 @@ async function runGetLicenseStatus(opts) {
 }
 
 
+// ==========================================
+// 新增工具：查看网络配置 (tmsh list net one-line)
+// ==========================================
+async function runViewInterfaceConfig(opts) {
+  const { f5_url, f5_username, f5_password } = opts;
+  
+  const cmdString = 'tmsh list net one-line';
+
+  console.log(`[ViewNetwork] Executing: ${cmdString}`);
+
+  const body = {
+    command: 'run',
+    utilCmdArgs: `-c '${cmdString}'`
+  };
+
+  try {
+    const data = await f5RequestUtil('POST', '/bash', body, opts);
+    let output = data?.commandResult || '';
+
+    if (!output && data) {
+       output = "Command executed but returned no text.";
+    }
+
+    // 清洗配置 (依然复用这个函数去除无关头部信息)
+    const optimizedConfig = cleanF5ConfigResponse(output);
+  
+    // 长度截断保护
+    const MAX_CONFIG_CHARS = 100000;  
+    let finalOutput = optimizedConfig;
+    if (finalOutput.length > MAX_CONFIG_CHARS) {
+        finalOutput = finalOutput.substring(0, MAX_CONFIG_CHARS) + "\n... (Configuration truncated due to length) ...";
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Network Configuration (tmsh list net one-line):\n(Includes: Interfaces, VLANs, Self-IPs)\n\n${finalOutput}`
+        }
+      ]
+    };
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error viewing network config: ${err.message}`
+        }
+      ]
+    };
+  }
+}
+
+
 
 // ===== 清洗 F5 日志数据  =====
 function cleanF5LogResponse(f5Json) {
@@ -1639,7 +1693,7 @@ const tools = [
                  '- **saved_base_file (/config/bigip_base.conf)**: Contains infrastructure settings: VLANs, Self IPs, Management IP, Routes, and Interface settings.\n\n' +
                  'CRITICAL CONFIGURATION CHECKLIST:\n' +
                  '1. **OneConnect & HTTP Dependency**: If a Virtual Server has a "OneConnect" profile configured to optimize connection reuse, it **MUST** also have an "HTTP" (or HTTPS) profile configured. OneConnect operates at Layer 7 and requires HTTP header parsing to function correctly.\n' +
-                 '2. **SNAT Configuration**: Check if "source-address-translation" is set to "automap" or a specific SNAT pool to ensure return traffic routing.\n' +
+                 '2. **SNAT Configuraition**: Check if "source-address-translation" is set to "automap" or a specific SNAT pool to ensure return traffic routing.\n' +
                  '3. **Monitor Status**: Verify pools have active monitors attached for health checking.',
     inputSchema: {
       type: 'object',
@@ -1799,7 +1853,22 @@ const tools = [
       additionalProperties: false
     },
     handler: runGetAwafEventDetail
-  }
+  },{
+    name: 'viewNetworkConfig',
+    description: 'Execute "tmsh list net" to view  network configurations including Interfaces, VLANs, Self-IPs, Trunks. \n' +
+                 'Use this instead of viewConfig when check interface to save token space and reduce noise.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        f5_url:         { type: 'string', description: 'F5 management URL' },
+        f5_username:    { type: 'string', description: 'F5 username' },
+        f5_password:    { type: 'string', description: 'F5 password' }
+      },
+      required: ['f5_url', 'f5_username', 'f5_password'],
+      additionalProperties: false
+    },
+    handler: runViewInterfaceConfig
+  },
 ];
 
 
