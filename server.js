@@ -1854,7 +1854,7 @@ const tools = [
     },
     handler: runGetAwafEventDetail
   },{
-    name: 'viewNetworkConfig',
+    name: 'runViewInterfaceConfig',
     description: 'Execute "tmsh list net" to view  network configurations including Interfaces, VLANs, Self-IPs, Trunks. \n' +
                  'Use this instead of viewConfig when check interface to save token space and reduce noise.',
     inputSchema: {
