@@ -977,11 +977,10 @@ function removeBlock(text, blockStartKeyword) {
       currentIndex++;
     }
 
-    // 如果平衡归零，说明找到了完整的块
     if (balance === 0) {
-      // 这里的 cutEndIndex 是闭合 '}' 的下一个位置
+
       const before = text.substring(0, startIndex);
-      // 检查后面是否有换行符，顺便删掉
+
       let cutEndIndex = currentIndex;
       if (text[cutEndIndex] === '\n') cutEndIndex++; 
       
@@ -1039,7 +1038,6 @@ async function runListAwafPolicies(opts) {
 
   try {
     // 使用 one-line 模式，输出精简，方便模型快速浏览
-    // awk '{print $3}' 是为了只提取策略名(可选优化)，但保留完整 one-line 更稳妥
     const output = await runBash(`tmsh list asm policy recursive one-line`);
     
     if (!output || output.trim().length === 0) {
@@ -1129,8 +1127,7 @@ async function runGetAwafEvents(opts) {
 
   // 1. 构建查询 Path
   const buildQuery = (activeFilter) => {
-    // [核心修复] 移除 $select 参数！
-    // 让 expandSubcollections=true 发挥全部威力，返回 enforcementState
+
     let query = `?$orderby=time%20desc&$top=${limit}&expandSubcollections=true`;
     
     if (activeFilter) {
@@ -1228,7 +1225,7 @@ async function runGetAwafEvents(opts) {
     }
 
     // 保留 Debug 以验证 enforcementState 是否回归
-    console.log("[DEBUG] First Item enforcementState check:", !!data.items[0].enforcementState);
+    //console.log("[DEBUG] First Item enforcementState check:", !!data.items[0].enforcementState);
 
     const events = data.items.map(e => {
       let violationStr = "None (Clean Traffic)";
@@ -1241,7 +1238,7 @@ async function runGetAwafEvents(opts) {
       }
 
       let riskVal = '0';
-      // 这里的逻辑现在应该能正常工作了，因为 enforcementState 回来了
+      
       if (e.enforcementState && e.enforcementState.rating !== undefined) {
           riskVal = String(e.enforcementState.rating);
       } else if (e.violationRating !== undefined && e.violationRating !== null) {
@@ -1266,7 +1263,7 @@ async function runGetAwafEvents(opts) {
     return {
       content: [{
         type: 'text',
-        text: `Found ${events.length} recent AWAF events.${warningMsg}\n${JSON.stringify(events, null, 2)}`
+        text: `Found ${events.length} recent AWAF events.${warningMsg}\n${JSON.stringify(events)}`
       }]
     };
 
@@ -1323,7 +1320,7 @@ async function runGetAwafEventDetail(opts) {
     return {
       content: [{
         type: 'text',
-        text: `Attack Evidence for Event ${event_id}:\n${JSON.stringify(analysisData, null, 2)}`
+        text: `Attack Evidence for Event ${event_id}:\n${JSON.stringify(analysisData)}`
       }]
     };
 
