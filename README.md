@@ -74,17 +74,16 @@ docker run -d -p 3000:3000 --name f5-mcp f5-mcp-server
 
 ```json
 {
-   "mcpServers": {
+  "mcpServers": {
     "f5ConfigServer": {
       "type": "streamableHttp",
       "url": "http://localhost:3000",
-      "endpoints": {
-        "listTools": "/mcp/list-tools",
-        "invoke":    "/mcp/invoke"
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer token"
       }
     }
   }
 }
-
 
 

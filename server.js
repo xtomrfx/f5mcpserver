@@ -606,10 +606,10 @@ async function runGetAuditLogs(opts) {
   // 2. 分流处理
   let resultText = "";
   if (shouldCollapse) {
-    // ✅ 使用专门的 Audit 优化函数
+    // 使用专门的 Audit 优化函数
     resultText = generateAuditLogSummary(rawText, 50);
   } else {
-    // ✅ Raw 模式：不做任何 PID 模糊处理，只做长度截断
+    // Raw 模式：不做任何 PID 模糊处理，只做长度截断
     resultText = truncateOutput(rawText, 150000); 
   }
 
@@ -1367,7 +1367,7 @@ async function runGetAwafEventDetail(opts) {
       "Violations": data.violations 
                     ? data.violations.map(v => v.violationReference?.name || "Unknown").join(', ') 
                     : "None",
-      // 🌟 最关键的：原始攻击包（Payload）
+      // 原始攻击包（Payload）
       "Raw_Request_Payload": data.rawRequest?.httpRequestUnescaped || "Not captured (size limit or setting)"
     };
 
