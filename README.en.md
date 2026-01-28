@@ -82,5 +82,52 @@ docker run -d -p 3000:3000 --name f5-mcp f5-mcp-server
     }
   }
 }
+```
+---
 
+## F5 MCP Tools Capability Matrix
 
+This MCP Server exposes the following F5 BIG-IP capabilities as tools for AI Agents.  （keep on adding more tools ）
+
+## 1. Local Traffic Manager (LTM)
+Tools for managing Virtual Servers, Pools, Members, and iRules.
+
+| Tool Name | Description | Key Parameters |
+| :--- | :--- | :--- |
+| **`listAllVirtual`** | Lists all Virtual Servers on the device, including status, destination IP:Port, and attached pools. | `None` |
+| **`createVirtualServer`** | Creates a new standard TCP Virtual Server and optionally binds it to an existing pool. | `virtual_name`, `ip`, `port`, `pool_name` |
+| **`deleteVirtualServer`** | Deletes a specified Virtual Server. | `virtual_name` |
+| **`listAllPool`** | Lists all Load Balancing Pools with their monitor status and member details. | `None` |
+| **`configurePool`** | Creates a new Pool and adds initial members. | `pool_name`, `members` (array of ip/port) |
+| **`deletePool`** | Deletes an entire Pool. | `pool_name` |
+| **`getPoolMemberStatus`** | Retrieves the health status (Up/Down) of all members in a specific pool. | `pool_name` |
+| **`removeMember`** | Removes a specific member from a pool. | `pool_name`, `member_address`, `member_port` |
+| **`updateMemberStat`** | **Enables or Disables** a pool member (Session state). Useful for maintenance or canary deployment. | `pool_name`, `member_address`, `action` ('enable'/'disable') |
+| **`addIrules`** | Uploads and creates a new iRule script on the device. | `irule_name`, `irule_code` |
+
+## 2. System Diagnostics & Observability
+Tools for device health monitoring, configuration auditing, and deep-dive troubleshooting.
+
+| Tool Name | Description | Key Features |
+| :--- | :--- | :--- |
+| **`viewConfig`** | Retrieves configuration snapshots. Supports `running_config` (tmsh list), `saved_ltm_file` (bigip.conf), and `saved_base_file` (network). | Auto-truncates large configs; Filter by module (e.g. `ltm`, `net`). |
+| **`runViewInterfaceConfig`** | A lightweight alternative to `viewConfig` specifically for Network/VLAN/Self-IP settings. | Executes `tmsh list net one-line`. |
+| **`runTcpdump`** | Executes `tcpdump` on the device to capture traffic. | Returns **Hex/ASCII** (-X) output for LLM analysis. Includes timeout protection. |
+| **`getLtmLogs`** | Retrieves `/var/log/ltm` logs within a time range. | **Smart Collapse Mode**: Summarizes repetitive logs to save tokens. |
+| **`getAuditLogs`** | Retrieves `/var/log/audit` logs for tracking configuration changes. | **PID Masking**: Groups user actions and system scripts intelligently. |
+| **`getSystemLogs`** | Retrieves `/var/log/messages` (System-level Linux events). | Standard syslog retrieval. |
+| **`getCpuStat`** | Retrieves CPU usage statistics. | Distinguishes between Control Plane and Data Plane (TMM) cores. |
+| **`getTmmInfo`** | Retrieves detailed TMM (Traffic Management Microkernel) resource usage. | Monitors memory and core utilization. |
+| **`runGetConnection`** | Retrieves global connection statistics. | Active Client/Server connections, SSL sessions. |
+| **`runGetCertificateStat`** | Retrieves SSL Certificate statistics. | Helps identify expired or failing certificates. |
+| **`getLicenseStatus`** | Checks device license status and active modules (LTM, ASM, etc.). | Returns Registration Key and active flags. |
+
+## 3. Security (AWAF / ASM)
+Tools for Web Application Firewall policy management and attack investigation.
+
+| Tool Name | Description | Key Features |
+| :--- | :--- | :--- |
+| **`listAwafPolicies`** | Lists all available ASM (AWAF) security policies. | Returns raw TMSH output for policy discovery. |
+| **`viewAwafPolicyConfig`** | Exports the configuration of a specific policy in Compact XML format. | Used to audit WAF rules and settings. |
+| **`getAwafAttackLog`** | Retrieves recent security incidents/attacks using OData filters. | Filter by `violationRating`, `clientIp`, `time`, etc. |
+| **`getAwafEventDetail`** | Retrieves full details for a specific Attack Event ID. | **Forensics**: Returns the full HTTP Payload, violations, and attack signature evidence. |
